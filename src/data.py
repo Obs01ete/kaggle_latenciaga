@@ -1,17 +1,10 @@
 import os
-import random
-import warnings
-from collections import defaultdict
+import numpy as np
 from pathlib import Path
-from torch_geometric.data import Data, Batch
-from tqdm.notebook import tqdm
-from typing import Any, Dict, List, Optional, Union, Tuple, Callable
 
 import torch
-import networkx as nx
-import numpy as np
-import pandas as pd
-from torch_geometric.data.dataset import Dataset, IndexType
+from torch_geometric.data import Data, Batch
+from torch_geometric.data.dataset import Dataset
 
 
 class LayoutData(Dataset):
@@ -38,7 +31,6 @@ class LayoutData(Dataset):
             coll: str,
             split: str,
             microbatch_size: int,
-            # transform: Optional[Callable[[Data], Data]] = None,
             ):
 
         super().__init__()
@@ -52,8 +44,6 @@ class LayoutData(Dataset):
         self.split = split
 
         self.microbatch_size = microbatch_size
-
-        # self.transform = transform
 
         self.data_dir = self._get_coll_root(coll)
         file_name_list = []
@@ -104,11 +94,11 @@ class LayoutData(Dataset):
 
             data_list.append(data)
 
-        # microbatch = Batch.from_data_list(
-        #     [data for _ in range(self.microbatch_size)])
         microbatch = Batch.from_data_list(data_list)
 
-        return microbatch # ignore type warning that Data must be returned. it is passed through out of __getitem__
+        # ignore type warning that Data must be returned.
+        # it is passed through out of __getitem__.
+        return microbatch
 
     def _get_coll_root(self, coll: str) -> Path:
         """Parse the collection and return the corresponding data root.

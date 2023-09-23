@@ -39,12 +39,6 @@ def main():
                             split="train",
                             microbatch_size=4)
 
-    # for i_microbatch, microbatch in enumerate(train_data):
-    #     microbatch: Batch
-    #     print(i_microbatch, microbatch)
-    #     if i_microbatch >= 2:
-    #         break
-
     logger = SummaryWriter()
 
     device = "gpu" if torch.cuda.is_available() else "cpu"
@@ -64,6 +58,7 @@ def main():
     
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     
+    model.train()
     for i_batch, batch in enumerate(train_loader):
         print("-"*80)
         print(i_batch, batch)

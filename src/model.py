@@ -68,11 +68,11 @@ class Model(nn.Module):
         node_feat_abs = torch.relu(node_feat) # discard negative numbers
         node_feat_log = torch.log1p(node_feat_abs)
         node_feat_emb = self.node_feat_embedding(node_feat_log)
-        # node_opcode_onehot = F.one_hot(node_opcode.long(), self.NUM_OPCODES)
         node_opcode_emb = self.node_opcode_embedding(node_opcode.long())
         config_feat_all = torch.zeros(size=(num_nodes, config_feat_size),
                                       dtype=torch.float, device=node_feat.device)
-        config_feat_all.scatter_(-2, node_config_ids.unsqueeze(-1), node_config_feat) # maybe there is a bug here, TODO make a test
+        # maybe there is a bug here, TODO make a test
+        config_feat_all.scatter_(-2, node_config_ids.unsqueeze(-1), node_config_feat)
 
         node_feat_all = torch.cat((node_feat_emb,
                                    node_opcode_emb,
