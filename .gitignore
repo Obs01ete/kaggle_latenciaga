@@ -1,1 +1,6 @@
-/predict-ai-model-runtime/
+/.vscode/
+/data/
+*.pth
+/runs/
+__pycache__
+/.ipynb_checkpoints/

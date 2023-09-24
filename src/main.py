@@ -9,6 +9,7 @@ from torch_geometric.data.data import BaseData
 from torch_geometric.loader import DataLoader
 
 from torchmetrics.functional.regression import kendall_rank_corrcoef
+from torchmetrics import MeanAbsolutePercentageError
 
 from src.data import LayoutData
 from src.model import Model
@@ -27,7 +28,12 @@ def loss_fn(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     # kendall, p_value = kendall_rank_corrcoef(
     #     pred, target, t_test=True, alternative='two-sided')
     # return kendall
-    return torch.nn.functional.mse_loss(pred, target)
+
+    # return kendall_rank_corrcoef(pred, target)
+
+    # return torch.nn.functional.mse_loss(pred, target)
+
+    return MeanAbsolutePercentageError()(pred, target)
 
 
 def main(): 
@@ -35,7 +41,7 @@ def main():
     data_root = Path("/home/khizbud/latenciaga/data/npz_all/npz")
 
     train_data = LayoutData(data_root,
-                            coll="layout-xla-default",
+                            coll="layout-xla-random",
                             split="train",
                             microbatch_size=4)
 
@@ -71,6 +77,9 @@ def main():
                      batch.node_config_ids,
                      batch.edge_index,
                      batch.batch)
+        
+        print("pred", pred.detach().cpu().numpy())
+        print("target", batch.config_runtime.detach().cpu().numpy())
 
         loss = loss_fn(pred, batch.config_runtime)
 
