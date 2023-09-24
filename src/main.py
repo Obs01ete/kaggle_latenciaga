@@ -24,18 +24,6 @@ def concat_premade_microbatches(microbatch_list: Sequence[Batch]):
     return batch
 
 
-def loss_fn(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    # kendall, p_value = kendall_rank_corrcoef(
-    #     pred, target, t_test=True, alternative='two-sided')
-    # return kendall
-
-    # return kendall_rank_corrcoef(pred, target)
-
-    # return torch.nn.functional.mse_loss(pred, target)
-
-    return MeanAbsolutePercentageError()(pred, target)
-
-
 def main(): 
     # data_root = Path("/kaggle/input/predict-ai-model-runtime/npz_all/npz")
     data_root = Path("/home/khizbud/latenciaga/data/npz_all/npz")
@@ -47,7 +35,8 @@ def main():
 
     logger = SummaryWriter()
 
-    device = "gpu" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print("device=", device)
     
     model = Model()
     model.to(device)
@@ -60,46 +49,66 @@ def main():
     train_loader = DataLoader(train_data,
                               batch_size=batch_size,
                               shuffle=True,
+                              num_workers=8, # 0
                               collate_fn=concat_premade_microbatches)
     
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    print("len(train_loader)=", len(train_loader)) # 69
+
+    loss_op = MeanAbsolutePercentageError().to(device)
     
-    model.train()
-    for i_batch, batch in enumerate(train_loader):
-        print("-"*80)
-        print(i_batch, batch)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-        batch = batch.to(device)
+    max_iterations = 10_000
+    iteration = 0
+    epoch = 0
+    
+    exit_training = False
+    while True:
+        if exit_training:
+            break
 
-        pred = model(batch.node_feat,
-                     batch.node_opcode,
-                     batch.node_config_feat,
-                     batch.node_config_ids,
-                     batch.edge_index,
-                     batch.batch)
+        model.train()
+
+        for batch in train_loader:
+            print("-"*80)
+            print(iteration, batch)
+
+            batch = batch.to(device)
+
+            pred = model(batch.node_feat,
+                        batch.node_opcode,
+                        batch.node_config_feat,
+                        batch.node_config_ids,
+                        batch.edge_index,
+                        batch.batch)
+            
+            print("pred", pred.detach().cpu().numpy())
+            print("target", batch.config_runtime.detach().cpu().numpy())
+
+            loss = loss_op(pred, batch.config_runtime)
+
+            loss_val = loss.detach().cpu().item()
+            print(f"Train loss = {loss_val:.5f}")
+            logger.add_scalar("train/loss", loss_val, iteration)
+
+            kendall, p_value = kendall_rank_corrcoef(
+                pred, batch.config_runtime,
+                t_test=True, alternative='two-sided')
+            print("kendall=", kendall.item(), "p_value=", p_value.item())
+            logger.add_scalar("train/kendall", kendall.item(), iteration)
+            logger.add_scalar("train/p_value", p_value.item(), iteration)
+            logger.add_scalar("train/epoch", epoch, iteration)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            iteration += 1
+            if iteration >= max_iterations:
+                exit_training = True
+                break
         
-        print("pred", pred.detach().cpu().numpy())
-        print("target", batch.config_runtime.detach().cpu().numpy())
-
-        loss = loss_fn(pred, batch.config_runtime)
-
-        loss_val = loss.detach().cpu().item()
-        print(f"Train loss = {loss_val:.5f}")
-        logger.add_scalar("train/loss", loss_val, i_batch)
-
-        kendall, p_value = kendall_rank_corrcoef(
-            pred, batch.config_runtime,
-            t_test=True, alternative='two-sided')
-        print("kendall=", kendall.item(), "p_value=", p_value.item())
-        logger.add_scalar("train/kendall", kendall.item(), i_batch)
-        logger.add_scalar("train/p_value", p_value.item(), i_batch)
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        # if i_batch >= 20:
-        #     break
+        epoch += 1
     
     print("Done")
 
