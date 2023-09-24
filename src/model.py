@@ -26,7 +26,7 @@ class Model(nn.Module):
                                  node_config_feat_size)
         
         in_channels = 32
-        channel_config = [32, 48, 64, 84]
+        channel_config = [64, 64, 128, 128, 256, 256]
         assert len(channel_config) > 0
 
         self.input_shaping = nn.Linear(concat_node_feat_size, in_channels)

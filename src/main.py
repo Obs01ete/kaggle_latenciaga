@@ -28,10 +28,12 @@ def main():
     # data_root = Path("/kaggle/input/predict-ai-model-runtime/npz_all/npz")
     data_root = Path("/home/khizbud/latenciaga/data/npz_all/npz")
 
+    microbatch_size = 8 # 4
+
     train_data = LayoutData(data_root,
                             coll="layout-xla-random",
                             split="train",
-                            microbatch_size=4)
+                            microbatch_size=microbatch_size)
 
     logger = SummaryWriter()
 
@@ -42,14 +44,15 @@ def main():
     model.to(device)
     
     # microbatches in batch. real batch is batch_size*microbatch_size
-    batch_size = 1 # 10
-    assert batch_size == 1, ("Need to check batch.node_opcode "
-        "is valid before enabling batch > 1")
+    batch_size = 10
+    # assert batch_size == 1, ("Need to check batch.node_opcode "
+    #     "is valid before enabling batch > 1")
     
     train_loader = DataLoader(train_data,
                               batch_size=batch_size,
                               shuffle=True,
                               num_workers=8, # 0
+                              pin_memory=True,
                               collate_fn=concat_premade_microbatches)
     
     print("len(train_loader)=", len(train_loader)) # 69
@@ -107,6 +110,8 @@ def main():
             if iteration >= max_iterations:
                 exit_training = True
                 break
+        
+        torch.save(model.state_dict(), "latest.pth")
         
         epoch += 1
     
