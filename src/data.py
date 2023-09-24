@@ -1,6 +1,8 @@
 import os
 import numpy as np
 from pathlib import Path
+from typing import Optional, Dict, Tuple, Union
+from functools import lru_cache
 
 import torch
 from torch_geometric.data import Data, Batch
@@ -30,12 +32,17 @@ class LayoutData(Dataset):
             data_root: Path,
             coll: str,
             split: str,
-            microbatch_size: int,
+            microbatch_size: Optional[int] = None,
             ):
 
         super().__init__()
 
         assert os.path.exists(data_root)
+
+        if split == "train":
+            assert microbatch_size is not None
+        if split in {"valid", "test"}:
+            assert  microbatch_size is None
 
         self.data_root = data_root
         assert coll in self.COLL
@@ -48,53 +55,99 @@ class LayoutData(Dataset):
         self.data_dir = self._get_coll_root(coll)
         file_name_list = []
         for file in os.listdir(self.data_dir):
-            if not file.endswith(".npz"): continue
+            if not file.endswith(".npz"):
+                continue
             data_file = str(self.data_dir/file)
             file_name_list.append(data_file)
         self.file_name_list = file_name_list
     
-    def len(self) -> int:
-        return len(self.file_name_list)
+        self._len: int
+        self.map_idx_to_name_and_config: \
+            Optional[Dict[int, Dict[str, Union[int, str]]]]
+        if self.split == "train":
+            self.map_idx_to_name_and_config = None
+            self._len = len(self.file_name_list)
+        else:
+            idx = 0
+            self.map_idx_to_name_and_config = dict()
+            for file_path in self.file_name_list:
+                npz_dict = dict(np.load(file_path))
+                num_configs = npz_dict["config_runtime"].shape[0]
+                for config_idx in range(num_configs):
+                    self.map_idx_to_name_and_config[idx] = dict(
+                        file_path=file_path,
+                        config_idx=config_idx)
+                    idx += 1
+            self._len = len(self.map_idx_to_name_and_config)
+        pass
 
-    def _get_single(self, idx: int) -> Data:
-        npz_dict = dict(np.load(self.file_name_list[idx]))
+    def len(self) -> int:
+        return self._len
+
+    @lru_cache
+    def _get_single(self, file_path: str) -> Data:
+        npz_dict = dict(np.load(file_path))
+
         data = Data(edge_index=torch.tensor(npz_dict["edge_index"].T).long())
+
         for name, array in npz_dict.items():
             if name == "edge_index":
                 continue
             tensor = torch.tensor(array) # inherit type
             setattr(data, name, tensor)
+
+        fname_wo_ext = os.path.splitext(os.path.basename(file_path))[0]
+        data.fname = fname_wo_ext
         return data
     
-    def get(self, idx: int) -> Batch:
-        single_data = self._get_single(idx)
-
-        # 'Data(node_feat=[372, 140], node_opcode=[372], edge_index=[2, 597], 
-        # node_config_feat=[47712, 26, 18], node_config_ids=[26],
-        # config_runtime=[47712], node_splits=[1, 3])'
+    def get(self, idx: int) -> Batch: # not Data
 
         RUNTIME_SCALE_TO_SEC = 1e-9
 
-        num_configs = single_data.node_config_feat.shape[0]
-        chosen = np.random.choice(np.arange(num_configs),
-                                  self.microbatch_size,
-                                  replace=False)
-        data_list = []
-        for imb in range(self.microbatch_size):
-            chosen_node_config_feat = single_data.node_config_feat[chosen]
-            chosen_config_runtime = single_data.config_runtime[chosen]
+        if self.map_idx_to_name_and_config is None: # train
+            file_path = self.file_name_list[idx]
+            single_data = self._get_single(file_path)
+
+            # 'Data(node_feat=[372, 140], node_opcode=[372], edge_index=[2, 597], 
+            # node_config_feat=[47712, 26, 18], node_config_ids=[26],
+            # config_runtime=[47712], node_splits=[1, 3])'
+
+            num_configs = single_data.node_config_feat.shape[0]
+
+            chosen = np.random.choice(np.arange(num_configs),
+                                    self.microbatch_size,
+                                    replace=False)
+            data_list = []
+            for imb in range(self.microbatch_size):
+                chosen_node_config_feat = single_data.node_config_feat[chosen]
+                chosen_config_runtime = single_data.config_runtime[chosen]
+
+                data = Data(edge_index=single_data.edge_index)
+                data.node_feat = single_data.node_feat
+                data.node_opcode = single_data.node_opcode
+                data.node_config_feat = chosen_node_config_feat[imb]
+                data.node_config_ids = single_data.node_config_ids
+                data.config_runtime = RUNTIME_SCALE_TO_SEC * chosen_config_runtime[imb]
+                data.fname = single_data.fname
+                # node_splits not going to use
+
+                data_list.append(data)
+
+            microbatch = Batch.from_data_list(data_list)
+        else: # val and test
+            name_and_config = self.map_idx_to_name_and_config[idx]
+            single_data = self._get_single(name_and_config['file_path'])
+            config_idx = name_and_config['config_idx']
 
             data = Data(edge_index=single_data.edge_index)
             data.node_feat = single_data.node_feat
             data.node_opcode = single_data.node_opcode
-            data.node_config_feat = chosen_node_config_feat[imb]
+            data.node_config_feat = single_data.node_config_feat[config_idx]
             data.node_config_ids = single_data.node_config_ids
-            data.config_runtime = RUNTIME_SCALE_TO_SEC * chosen_config_runtime[imb]
-            # node_splits not going to use
+            data.config_runtime = RUNTIME_SCALE_TO_SEC * single_data.config_runtime[config_idx]
+            data.fname = single_data.fname
 
-            data_list.append(data)
-
-        microbatch = Batch.from_data_list(data_list)
+            microbatch = Batch.from_data_list([data])
 
         # ignore type warning that Data must be returned.
         # it is passed through out of __getitem__.
