@@ -5,6 +5,7 @@ import numpy as np
 from tqdm import tqdm
 from collections import defaultdict
 from argparse import ArgumentParser
+import time
 
 import torch
 from torch.utils.tensorboard.writer import SummaryWriter
@@ -75,6 +76,8 @@ class Trainer:
 
     def train(self):
 
+        print("Start training")
+
         if self.logger is None:
             self.logger = SummaryWriter()
 
@@ -102,7 +105,11 @@ class Trainer:
             if exit_training:
                 break
 
+            end_iter_ts = time.time()
             for batch in train_loader:
+                data_load_ts = time.time()
+                data_load_dur = data_load_ts - end_iter_ts
+
                 print("-"*80)
                 print(self.iteration, batch)
 
@@ -139,9 +146,22 @@ class Trainer:
                 loss.backward()
                 optimizer.step()
 
+                forward_backward_ts = time.time()
+                forward_backward_dur = forward_backward_ts - data_load_ts
+
+                print(f"data_load_dur={data_load_dur}, forward_backward_dur={forward_backward_dur}")
+                self.logger.add_scalar("train/data_load_dur", data_load_dur, self.iteration)
+                self.logger.add_scalar("train/forward_backward_dur", forward_backward_dur, self.iteration)
+
                 iters_per_val = 100
                 if self.iteration % iters_per_val == iters_per_val - 1:
                     self.validate()
+                    validation_ts = time.time()
+                    validation_dur = validation_ts - forward_backward_ts
+                    print(f"validation_dur={validation_dur}")
+                    self.logger.add_scalar("val/validation_dur", validation_dur, self.iteration)
+
+                end_iter_ts = time.time()
 
                 self.iteration += 1
                 if self.iteration >= max_iterations:
