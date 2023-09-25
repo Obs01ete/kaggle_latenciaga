@@ -306,6 +306,8 @@ def main():
     parser = ArgumentParser(description='Latenciaga')
     parser.add_argument('--test-snapshot', action='store', type=str,
                         help='Provide .pth, get submission.csv')
+    parser.add_argument('--start-from-pth', action='store', type=str,
+                        help='In training mode, start with the provided .pth')
     parser.add_argument('--test-val-submission-csv', action='store', type=str,
                         help='Provide submission_val.csv, get score')
 
@@ -318,6 +320,9 @@ def main():
     elif args.test_val_submission_csv is not None:
         trainer.test_val_submission_csv(args.test_val_submission_csv)
     else:
+        if args.start_from_pth is not None:
+            trainer.load_snapshot(args.start_from_pth)
+            print(f"Loading snapshot from {args.start_from_pth}")
         trainer.train()
     print("Done")
 
