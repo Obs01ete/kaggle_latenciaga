@@ -8,4 +8,5 @@ conda install pyg -c pyg
 conda install pytorch pytorch-cuda=11.7 -c pytorch -c nvidia
 pip install torchmetrics
 pip install tensorboard
+pip install six
 ```

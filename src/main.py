@@ -1,6 +1,6 @@
 
 from pathlib import Path
-from typing import Sequence, Dict, Optional
+from typing import Sequence, Dict, Optional, List
 import numpy as np
 from tqdm import tqdm
 from collections import defaultdict
@@ -53,7 +53,7 @@ class Trainer:
             coll=self.collection,
             split="test")
         
-        default_worker_threads = 16 # 8
+        default_worker_threads = 8 # 16-oom
         self.worker_threads = 0 if self.debug else default_worker_threads
 
         self.logger = None
@@ -155,9 +155,10 @@ class Trainer:
         self.test("end_of_train_submission.csv")
     
     def validate(self):
-        self._validate('valid')
+        self._validate('valid', "submission_val_automatic.csv")
     
     def test(self, submission_csv_path: str):
+        self._validate('valid', submission_csv_path+"_val.csv")
         self._validate('test', submission_csv_path)
     
     def _validate(self, split: str,
@@ -165,9 +166,29 @@ class Trainer:
 
         assert split in {'valid', 'test'}
 
-        if submission_csv_path is None:
-            submission_csv_path = "submission_val.csv"
+        loss_list, prediction_dict = self._make_predictions(split)
+        
+        if split == 'valid':
+            self._compute_metrics(split, loss_list, prediction_dict)
 
+        if submission_csv_path is not None:
+            self._prepare_submission(prediction_dict, submission_csv_path)
+
+    def _prepare_submission(self,
+                            prediction_dict: Dict[str, Dict[str, List[float]]],
+                            submission_csv_path: str):
+        # Prepare submission
+        submission_dict: Dict[str, np.ndarray] = dict()
+        for name, dol in prediction_dict.items():
+            pred_all = np.array(dol['pred_list'], dtype=np.float32)
+            # NB: pred_all are guaranteed to be sequential by DataLoader
+            submission_ranks = np.argsort(pred_all)
+            submission_dict[name] = submission_ranks
+
+        self.save_submission(submission_dict, submission_csv_path)
+        print(f"Saved to {submission_csv_path}")
+    
+    def _make_predictions(self, split: str):
         loader = DataLoader(
             self.val_data if split == 'valid' else self.test_data,
             batch_size=self.val_batch_size,
@@ -177,7 +198,8 @@ class Trainer:
         
         print("len(loader)=", len(loader))
 
-        dd = defaultdict(lambda: defaultdict(list))
+        prediction_dict: Dict[str, Dict[str, List[float]]] = \
+            defaultdict(lambda: defaultdict(list))
         loss_list = []
 
         for i_batch, batch in tqdm(enumerate(loader)):
@@ -199,57 +221,49 @@ class Trainer:
                     loss = self.loss_op(pred, batch.config_runtime)
                     loss_list.append(loss.item())
 
-            # for key in batch.keys:
-            #     v = getattr(batch, key)
-            #     if isinstance(v, torch.Tensor):
-            #         print(key, v.shape)
-
             for pr, tg, fn in zip(pred, batch.config_runtime, batch.fname):
                 assert len(fn) == 1
-                dol = dd[fn[0]]
+                dol = prediction_dict[fn[0]]
                 dol['pred_list'].append(pr.item())
                 dol['target_list'].append(tg.item())
 
             if self.debug:
+            # if True:
                 if i_batch >= 2:
                     break
         
-        if split == 'valid':
-            loss_grand = np.mean(np.array(loss_list, dtype=np.float32))
-
-            kendall_grand_list = []
-            p_value_grand_list = []
-            for name, dol in dd.items():
-                pred_all = np.array(dol['pred_list'], dtype=np.float32)
-                target_all = np.array(dol['target_list'], dtype=np.float32)
-
-                kendall, p_value = kendall_rank_corrcoef(
-                    torch.tensor(pred_all), torch.tensor(target_all),
-                    t_test=True, alternative='two-sided')
-
-                kendall_grand_list.append(kendall.item())
-                p_value_grand_list.append(p_value.item())
-
-            kendall_grand = np.mean(kendall_grand_list)
-            p_value_grand = np.mean(p_value_grand_list)
-
-            print(f"{split} kendall=", kendall_grand.item(), "p_value=", p_value_grand.item())
+        return loss_list, prediction_dict
+    
+    def _compute_metrics(self, split:str,
+                         loss_list: Optional[List[float]],
+                         prediction_dict: Dict[str, Dict[str, List[float]]]):
+        if loss_list is not None and len(loss_list) > 0:
+            loss_grand = np.mean(np.array(loss_list, dtype=np.float32)).item()
             print(f"{split} loss = {loss_grand:.5f}")
-            if self.logger is not None:
-                self.logger.add_scalar("val/loss", loss_grand.item(), self.iteration)
-                self.logger.add_scalar("val/kendall", kendall_grand.item(), self.iteration)
-                self.logger.add_scalar("val/p_value", p_value_grand.item(), self.iteration)
+        else:
+            loss_grand = float('nan')
 
-        # Prepare submission
-        submission_dict: Dict[str, np.ndarray] = dict()
-        for name, dol in dd.items():
+        kendall_grand_list = []
+        p_value_grand_list = []
+        for name, dol in prediction_dict.items():
             pred_all = np.array(dol['pred_list'], dtype=np.float32)
-            # NB: pred_all are guaranteed to be sequential by DataLoader
-            submission_ranks = np.argsort(pred_all)
-            submission_dict[name] = submission_ranks
+            target_all = np.array(dol['target_list'], dtype=np.float32)
 
-        self.save_submission(submission_dict, submission_csv_path)
-        print(f"Saved to {submission_csv_path}")
+            kendall, p_value = kendall_rank_corrcoef(
+                torch.tensor(pred_all), torch.tensor(target_all),
+                t_test=True, alternative='two-sided')
+
+            kendall_grand_list.append(kendall.item())
+            p_value_grand_list.append(p_value.item())
+
+        kendall_grand = np.mean(kendall_grand_list)
+        p_value_grand = np.mean(p_value_grand_list)
+
+        print(f"{split} kendall=", kendall_grand.item(), "p_value=", p_value_grand.item())
+        if self.logger is not None:
+            self.logger.add_scalar("val/loss", loss_grand, self.iteration)
+            self.logger.add_scalar("val/kendall", kendall_grand.item(), self.iteration)
+            self.logger.add_scalar("val/p_value", p_value_grand.item(), self.iteration)
 
     def save_submission(self,
                         submission_dict: Dict[str, np.ndarray],
@@ -264,12 +278,36 @@ class Trainer:
     def load_snapshot(self, snapshot_path: str):
         self.model.load_state_dict(torch.load(snapshot_path,
                                               map_location=self.device))
+    
+    def test_val_submission_csv(self, submission_csv_path: str):
+        loader = DataLoader(
+            self.val_data,
+            batch_size=self.val_batch_size,
+            shuffle=False,
+            num_workers=self.worker_threads,
+            pin_memory=True)
+
+        print("len(loader)=", len(loader))
+
+        prediction_dict: Dict[str, Dict[str, List[float]]] = \
+            defaultdict(lambda: defaultdict(list))
+
+        for _, batch in tqdm(enumerate(loader)):
+
+            for tg, fn in zip(batch.config_runtime, batch.fname):
+                assert len(fn) == 1
+                dol = prediction_dict[fn[0]]
+                dol['target_list'].append(tg.item())
+
+        self._compute_metrics('valid', None, prediction_dict)
 
 
 def main():
     parser = ArgumentParser(description='Latenciaga')
     parser.add_argument('--test-snapshot', action='store', type=str,
                         help='Provide .pth, get submission.csv')
+    parser.add_argument('--test-val-submission-csv', action='store', type=str,
+                        help='Provide submission_val.csv, get score')
 
     args = parser.parse_args()
 
@@ -277,6 +315,8 @@ def main():
     if args.test_snapshot is not None:
         trainer.load_snapshot(args.test_snapshot)
         trainer.test("test_submission.csv")
+    elif args.test_val_submission_csv is not None:
+        trainer.test_val_submission_csv(args.test_val_submission_csv)
     else:
         trainer.train()
     print("Done")
