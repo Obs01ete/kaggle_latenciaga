@@ -1,4 +1,6 @@
 from pathlib import Path
+from tqdm import tqdm
+
 from torch.utils.data import DataLoader
 
 from src.main import concat_premade_microbatches
@@ -16,7 +18,8 @@ def test_dataloader():
         data_root,
         coll=collection,
         split="train",
-        microbatch_size=microbatch_size)
+        microbatch_size=microbatch_size,
+        oversample_factor=2)
 
     batch_size = 5
 
@@ -31,6 +34,7 @@ def test_dataloader():
         collate_fn=concat_premade_microbatches)
 
     for i in range(10):
+        print(f"------- {i} ---------")
 
         for i_batch, batch in enumerate(train_loader):
             print(batch)
@@ -52,23 +56,26 @@ def test_dataloader_val():
 
         batch_size = 10
 
-        worker_threads = 0
+        worker_threads = 8
 
         val_loader = DataLoader(
             val_data,
             batch_size=batch_size,
             shuffle=False,
             num_workers=worker_threads,
-            pin_memory=True)
+            pin_memory=True,
+            collate_fn=concat_premade_microbatches)
 
-        for i_batch, batch in enumerate(val_loader):
-            print(batch)
-            # if i_batch >= 2:
-            #     break
+        for i in range(2):
+            print(f"------- {i} ---------")
+            for i_batch, batch in tqdm(enumerate(val_loader)):
+                print(batch)
+                # if i_batch >= 2:
+                #     break
         
         print("Done")
 
 
 if __name__ == "__main__":
-     test_dataloader()
-    #  test_dataloader_val()
+    # test_dataloader()
+    test_dataloader_val()

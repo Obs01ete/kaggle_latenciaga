@@ -33,6 +33,7 @@ class LayoutData(Dataset):
             coll: str,
             split: str,
             microbatch_size: Optional[int] = None,
+            oversample_factor: Optional[int] = None,
             ):
 
         super().__init__()
@@ -41,8 +42,10 @@ class LayoutData(Dataset):
 
         if split == "train":
             assert microbatch_size is not None
+            # assert oversample_factor is not None
         if split in {"valid", "test"}:
-            assert  microbatch_size is None
+            assert microbatch_size is None
+            assert oversample_factor is None
 
         self.data_root = data_root
         assert coll in self.COLL
@@ -59,8 +62,12 @@ class LayoutData(Dataset):
                 continue
             data_file = str(self.data_dir/file)
             file_name_list.append(data_file)
-        self.file_name_list = file_name_list
-    
+
+        if oversample_factor is not None:
+            self.file_name_list = file_name_list * oversample_factor
+        else:
+            self.file_name_list = file_name_list
+
         self._len: int
         self.map_idx_to_name_and_config: \
             Optional[Dict[int, Dict[str, Union[int, str]]]]
@@ -84,7 +91,7 @@ class LayoutData(Dataset):
     def len(self) -> int:
         return self._len
 
-    @lru_cache
+    @lru_cache(maxsize=1)
     def _get_single(self, file_path: str) -> Data:
         npz_dict = dict(np.load(file_path))
 
@@ -105,6 +112,8 @@ class LayoutData(Dataset):
         RUNTIME_SCALE_TO_SEC = 1e-9
 
         if self.map_idx_to_name_and_config is None: # train
+            assert self.microbatch_size is not None
+
             file_path = self.file_name_list[idx]
             single_data = self._get_single(file_path)
 
@@ -136,7 +145,10 @@ class LayoutData(Dataset):
             microbatch = Batch.from_data_list(data_list)
         else: # val and test
             name_and_config = self.map_idx_to_name_and_config[idx]
-            single_data = self._get_single(name_and_config['file_path'])
+            file_path = name_and_config['file_path']
+            # print(self._get_single.cache_info())
+            # print("getting", file_path)
+            single_data = self._get_single(file_path)
             config_idx = name_and_config['config_idx']
 
             data = Data(edge_index=single_data.edge_index)
@@ -151,7 +163,7 @@ class LayoutData(Dataset):
 
         # ignore type warning that Data must be returned.
         # it is passed through out of __getitem__.
-        return microbatch
+        return microbatch # type: ignore
 
     def _get_coll_root(self, coll: str) -> Path:
         """Parse the collection and return the corresponding data root.

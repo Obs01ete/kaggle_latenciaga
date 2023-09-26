@@ -44,11 +44,14 @@ class Trainer:
 
         self.collection = "layout-xla-random"
 
+        self.oversample_factor = 100 # 10 is good, crashes at 10 and 100
+
         self.train_data = LayoutData(
             data_root,
             coll=self.collection,
             split="train",
-            microbatch_size=self.microbatch_size)
+            microbatch_size=self.microbatch_size,
+            oversample_factor=self.oversample_factor)
 
         self.val_data = LayoutData(
             data_root,
@@ -60,7 +63,7 @@ class Trainer:
             coll=self.collection,
             split="test")
         
-        default_worker_threads = 8 # 16-oom
+        default_worker_threads = 16
 
         cpu_count = os.cpu_count()
         if cpu_count is not None:
@@ -110,7 +113,7 @@ class Trainer:
         
         optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-3)
 
-        max_iterations = 100_000 # 40_000
+        max_iterations = 100_000 # 40_000, 10k iter=6h
         epoch = 0
 
         print("torch.get_num_threads=", torch.get_num_threads())
@@ -186,7 +189,8 @@ class Trainer:
             
             torch.save(self.model.state_dict(), "latest.pth")
             
-            epoch += 1
+            epoch += (self.oversample_factor
+                      if self.oversample_factor is not None else 1)
         
         self.test("end_of_train_submission.csv")
     
@@ -229,7 +233,7 @@ class Trainer:
             self.val_data if split == 'valid' else self.test_data,
             batch_size=self.val_batch_size,
             shuffle=False,
-            num_workers=self.worker_threads,
+            num_workers=self.worker_threads // 4,
             pin_memory=True,
             collate_fn=concat_premade_microbatches,
             worker_init_fn=worker_init_fn)
@@ -242,7 +246,7 @@ class Trainer:
 
         for i_batch, batch in tqdm(enumerate(loader)):
 
-            batch = batch.to(self.device)
+            batch = batch.to(self.device, non_blocking=True)
 
             self.model.eval()
 

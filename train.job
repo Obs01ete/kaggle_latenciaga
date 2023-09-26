@@ -2,12 +2,12 @@
 #SBATCH -N 1
 #SBATCH --partition=batch
 #SBATCH -J latenciaga
-#SBATCH -o /ibex/ai/home/khizbud/latenciaga/output.%J.out
-#SBATCH -e /ibex/ai/home/khizbud/latenciaga/output.%J.err
+#SBATCH -o /ibex/ai/home/khizbud/latenciaga/slurm_logs/output.%J.out
+#SBATCH -e /ibex/ai/home/khizbud/latenciaga/slurm_logs/output.%J.err
 #SBATCH --mail-user=dmitrii.khizbullin@kaust.edu.sa
 #SBATCH --mail-type=END,FAIL
 #SBATCH --time=12:00:00
-#SBATCH --mem=100G
+#SBATCH --mem=200G
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-task=16
@@ -16,4 +16,5 @@
 module purge
 conda activate latenciaga3
 
+# PYTHONPATH=. python src/main.py
 PYTHONPATH=. python src/main.py --start-from-pth=good_0924.pth
