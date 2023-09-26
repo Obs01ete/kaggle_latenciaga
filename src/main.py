@@ -1,4 +1,4 @@
-
+import os
 from pathlib import Path
 from typing import Sequence, Dict, Optional, List
 import numpy as np
@@ -10,7 +10,7 @@ import time
 import torch
 from torch.utils.tensorboard.writer import SummaryWriter
 from torch_geometric.data import Data, Batch
-from torch_geometric.loader import DataLoader
+from torch.utils.data import DataLoader
 
 from torchmetrics.functional.regression import kendall_rank_corrcoef
 from torchmetrics import MeanAbsolutePercentageError
@@ -26,6 +26,12 @@ def concat_premade_microbatches(microbatch_list: Sequence[Batch]):
             grand_list.append(sample)
     batch = Batch.from_data_list(grand_list)
     return batch
+
+
+def worker_init_fn(worker_id: int) -> None:
+    cpu_count = os.cpu_count()
+    if cpu_count is not None:
+        os.sched_setaffinity(0, range(cpu_count))
 
 
 class Trainer:
@@ -55,7 +61,13 @@ class Trainer:
             split="test")
         
         default_worker_threads = 8 # 16-oom
-        self.worker_threads = 0 if self.debug else default_worker_threads
+
+        cpu_count = os.cpu_count()
+        if cpu_count is not None:
+            worker_threads = min(cpu_count, default_worker_threads)
+        else:
+            worker_threads = default_worker_threads
+        self.worker_threads = 0 if self.debug else worker_threads
 
         self.logger = None
 
@@ -91,7 +103,8 @@ class Trainer:
             shuffle=True,
             num_workers=self.worker_threads,
             pin_memory=True,
-            collate_fn=concat_premade_microbatches)
+            collate_fn=concat_premade_microbatches,
+            worker_init_fn=worker_init_fn)
         
         print("len(train_loader)=", len(train_loader)) # 69
         
@@ -99,6 +112,9 @@ class Trainer:
 
         max_iterations = 100_000 # 40_000
         epoch = 0
+
+        print("torch.get_num_threads=", torch.get_num_threads())
+        print("DataLoader num worker threads", self.worker_threads)
         
         exit_training = False
         while True:
@@ -153,7 +169,7 @@ class Trainer:
                 self.logger.add_scalar("train/data_load_dur", data_load_dur, self.iteration)
                 self.logger.add_scalar("train/forward_backward_dur", forward_backward_dur, self.iteration)
 
-                iters_per_val = 100
+                iters_per_val = 200
                 if self.iteration % iters_per_val == iters_per_val - 1:
                     self.validate()
                     validation_ts = time.time()
@@ -214,7 +230,9 @@ class Trainer:
             batch_size=self.val_batch_size,
             shuffle=False,
             num_workers=self.worker_threads,
-            pin_memory=True)
+            pin_memory=True,
+            collate_fn=concat_premade_microbatches,
+            worker_init_fn=worker_init_fn)
         
         print("len(loader)=", len(loader))
 
@@ -242,8 +260,8 @@ class Trainer:
                     loss_list.append(loss.item())
 
             for pr, tg, fn in zip(pred, batch.config_runtime, batch.fname):
-                assert len(fn) == 1
-                dol = prediction_dict[fn[0]]
+                assert isinstance(fn, str), "File name must be a string"
+                dol = prediction_dict[fn]
                 dol['pred_list'].append(pr.item())
                 dol['target_list'].append(tg.item())
 
@@ -305,7 +323,9 @@ class Trainer:
             batch_size=self.val_batch_size,
             shuffle=False,
             num_workers=self.worker_threads,
-            pin_memory=True)
+            pin_memory=True,
+            collate_fn=concat_premade_microbatches,
+            worker_init_fn=worker_init_fn)
 
         print("len(loader)=", len(loader))
 
@@ -315,8 +335,8 @@ class Trainer:
         for _, batch in tqdm(enumerate(loader)):
 
             for tg, fn in zip(batch.config_runtime, batch.fname):
-                assert len(fn) == 1
-                dol = prediction_dict[fn[0]]
+                assert isinstance(fn, str), "File name must be a string"
+                dol = prediction_dict[fn]
                 dol['target_list'].append(tg.item())
 
         self._compute_metrics('valid', None, prediction_dict)

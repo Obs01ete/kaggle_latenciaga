@@ -16,4 +16,4 @@
 module purge
 conda activate latenciaga3
 
-PYTHONPATH=. python src/main.py
+PYTHONPATH=. python src/main.py --start-from-pth=good_0924.pth
