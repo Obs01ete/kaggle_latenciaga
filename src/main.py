@@ -24,7 +24,7 @@ def concat_premade_microbatches(microbatch_list: Sequence[Batch]):
     for micribatch in microbatch_list:
         for sample in micribatch.to_data_list():
             grand_list.append(sample)
-    batch = Batch.from_data_list(grand_list)
+    batch = Batch.from_data_list(grand_list, follow_batch=LayoutData.FOLLOW_BATCH_KEYS)
     return batch
 
 
@@ -43,6 +43,8 @@ class Trainer:
         self.microbatch_size = 4
 
         self.collection = "layout-xla-random"
+        # self.collection = "layout-xla-default"
+        print("collection=", self.collection)
 
         self.oversample_factor = 100 # 10 is good, crashes at 10 and 100
 
@@ -77,17 +79,21 @@ class Trainer:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         print("device=", self.device)
         
-        self.model = Model()
-        self.model.to(self.device)
-
         # microbatches in batch. real batch is batch_size*microbatch_size
         self.batch_size = 10
-        # assert self.batch_size == 1, ("Need to check batch.node_opcode "
-        #     "is valid before enabling batch > 1")
+
+        self.model = Model(self.full_batch_size,
+                           self.microbatch_size)
+        self.model.to(self.device)
+
         self.val_batch_size = 40
         self.test_batch_size = self.val_batch_size
 
         self.loss_op = MeanAbsolutePercentageError().to(self.device)
+    
+    @property
+    def full_batch_size(self):
+        return self.batch_size * self.microbatch_size
 
     def train(self):
 
@@ -98,7 +104,7 @@ class Trainer:
 
         self.iteration = 0
 
-        # self.validate()
+        # self.validate() # for quick debug
 
         train_loader = DataLoader(
             self.train_data,
@@ -109,7 +115,7 @@ class Trainer:
             collate_fn=concat_premade_microbatches,
             worker_init_fn=worker_init_fn)
         
-        print("len(train_loader)=", len(train_loader)) # 69
+        print("len(train_loader)=", len(train_loader))
         
         optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-3)
 
@@ -132,17 +138,22 @@ class Trainer:
                 print("-"*80)
                 print(self.iteration, batch)
 
-                batch = batch.to(self.device)
+                batch = batch.to(self.device, non_blocking=True)
 
                 self.model.train()
 
                 pred = self.model(
                     batch.node_feat,
                     batch.node_opcode,
+                    batch.batch,
+                    batch.ptr,
+
                     batch.node_config_feat,
                     batch.node_config_ids,
-                    batch.edge_index,
-                    batch.batch)
+                    batch.node_config_feat_batch,
+                    batch.node_config_feat_ptr,
+
+                    batch.edge_index)
                 
                 # print("pred", pred.detach().cpu().numpy())
                 # print("target", batch.config_runtime.detach().cpu().numpy())
@@ -254,10 +265,15 @@ class Trainer:
                 pred = self.model(
                     batch.node_feat,
                     batch.node_opcode,
+                    batch.batch,
+                    batch.ptr,
+
                     batch.node_config_feat,
                     batch.node_config_ids,
-                    batch.edge_index,
-                    batch.batch)
+                    batch.node_config_feat_batch,
+                    batch.node_config_feat_ptr,
+
+                    batch.edge_index)
 
                 if split == 'valid':
                     loss = self.loss_op(pred, batch.config_runtime)

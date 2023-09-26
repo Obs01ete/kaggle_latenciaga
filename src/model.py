@@ -10,8 +10,16 @@ class Model(nn.Module):
     NUM_NODE_FEATURES = 140
     NUM_OPCODES = 120
 
-    def __init__(self, node_config_feat_size: int = 18):
+    def __init__(self,
+                 full_batch_size: int,
+                 microbatch_size: int,
+                 node_config_feat_size: int = 18,
+                 ):
+
         super().__init__()
+
+        # self.full_batch_size = full_batch_size # does not work with the remainder batch
+        self.microbatch_size = microbatch_size
 
         node_feat_emb_size = 20
         node_opcode_emb_size = 12
@@ -46,33 +54,56 @@ class Model(nn.Module):
     def forward(self,
                 node_feat: torch.Tensor,
                 node_opcode: torch.Tensor,
+                batch: torch.Tensor,
+                ptr: torch.Tensor,
+
                 node_config_feat: torch.Tensor,
                 node_config_ids: torch.Tensor,
-                edge_index: torch.Tensor,
-                batch: torch.Tensor,
+                node_config_batch: torch.Tensor,
+                node_config_ptr: torch.Tensor,
+                
+                edge_index: torch.Tensor
                 ) -> torch.Tensor:
         """
-        DataBatch(
-            edge_index=[2, 2388],
-            node_feat=[1488, 140],
-            node_opcode=[1488],
-            node_config_feat=[104, 18],
-            node_config_ids=[104],
-            config_runtime=[4],
-            batch=[1488])
+            DataBatch(
+                node_feat=[525076, 140],
+                node_opcode=[525076],
+                batch=[525076],
+                ptr=[41],
+
+                node_config_feat=[35496, 18],
+                node_config_ids=[35496],
+                node_config_batch=[35496],
+                node_config_ptr=[41],
+
+                edge_index=[2, 896088],
+                )
         """
 
-        num_nodes = node_feat.shape[-2]
-        config_feat_size = node_config_feat.shape[-1]
+        batch_size = ptr.shape[0] - 1
+        if batch_size % self.microbatch_size != 0:
+            print(f"Warning: batch size {batch_size} not divisible "
+                  f"by microbatch size {self.microbatch_size}. "
+                  f"Fine for val, error for train.")
+        num_nodes = node_feat.shape[0]
+        # num_configs = node_config_feat.shape[0]
+        config_feat_size = node_config_feat.shape[1]
 
         node_feat_abs = torch.relu(node_feat) # discard negative numbers
         node_feat_log = torch.log1p(node_feat_abs)
         node_feat_emb = self.node_feat_embedding(node_feat_log)
         node_opcode_emb = self.node_opcode_embedding(node_opcode.long())
         config_feat_all = torch.zeros(size=(num_nodes, config_feat_size),
-                                      dtype=torch.float, device=node_feat.device)
-        # maybe there is a bug here, TODO make a test
-        config_feat_all.scatter_(-2, node_config_ids.unsqueeze(-1), node_config_feat)
+                                      dtype=torch.float32, device=node_feat.device)
+
+        for ib in range(batch_size):
+            config_slice = slice(node_config_ptr[ib],
+                                 node_config_ptr[ib+1])
+            sample_config_ids = node_config_ids[config_slice]
+            sample_config_feat = node_config_feat[config_slice]
+            
+            global_config_ids = sample_config_ids + ptr[ib]
+            config_feat_all[global_config_ids, :] = sample_config_feat
 
         node_feat_all = torch.cat((node_feat_emb,
                                    node_opcode_emb,

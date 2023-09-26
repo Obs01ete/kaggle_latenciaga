@@ -27,6 +27,8 @@ class LayoutData(Dataset):
         "tile-xla"
     ]
 
+    FOLLOW_BATCH_KEYS = ["node_config_feat", "node_config_ids"]
+
     def __init__(
             self,
             data_root: Path,
@@ -142,7 +144,7 @@ class LayoutData(Dataset):
 
                 data_list.append(data)
 
-            microbatch = Batch.from_data_list(data_list)
+            microbatch = Batch.from_data_list(data_list, follow_batch=self.FOLLOW_BATCH_KEYS)
         else: # val and test
             name_and_config = self.map_idx_to_name_and_config[idx]
             file_path = name_and_config['file_path']
@@ -159,7 +161,7 @@ class LayoutData(Dataset):
             data.config_runtime = RUNTIME_SCALE_TO_SEC * single_data.config_runtime[config_idx]
             data.fname = single_data.fname
 
-            microbatch = Batch.from_data_list([data])
+            microbatch = Batch.from_data_list([data], follow_batch=self.FOLLOW_BATCH_KEYS)
 
         # ignore type warning that Data must be returned.
         # it is passed through out of __getitem__.
