@@ -6,6 +6,7 @@ from tqdm import tqdm
 from collections import defaultdict
 from argparse import ArgumentParser
 import time
+import datetime
 
 import torch
 from torch.utils.tensorboard.writer import SummaryWriter
@@ -35,15 +36,19 @@ def worker_init_fn(worker_id: int) -> None:
 
 
 class Trainer:
-    def __init__(self, debug: bool = False):
+    def __init__(self,
+                 collection: Optional[str] = None,
+                 debug: bool = False):
         self.debug = debug
     
         data_root = Path("/home/khizbud/latenciaga/data/npz_all/npz")
 
         self.microbatch_size = 4
 
-        self.collection = "layout-xla-random"
-        # self.collection = "layout-xla-default"
+        if collection is None:
+            self.collection = "layout-xla-random"
+        else:
+            self.collection = collection
         print("collection=", self.collection)
 
         self.oversample_factor = 100 # 10 is good, crashes at 10 and 100
@@ -74,6 +79,7 @@ class Trainer:
             worker_threads = default_worker_threads
         self.worker_threads = 0 if self.debug else worker_threads
 
+        self.artefact_dir = None
         self.logger = None
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -99,8 +105,13 @@ class Trainer:
 
         print("Start training")
 
+        datetime_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self.artefact_dir = os.path.join("runs",
+                                         f"{datetime_str}_{self.collection}")
+        os.makedirs(self.artefact_dir, exist_ok=True)
+
         if self.logger is None:
-            self.logger = SummaryWriter()
+            self.logger = SummaryWriter(self.artefact_dir, flush_secs=30)
 
         self.iteration = 0
 
@@ -154,9 +165,6 @@ class Trainer:
                     batch.node_config_feat_ptr,
 
                     batch.edge_index)
-                
-                # print("pred", pred.detach().cpu().numpy())
-                # print("target", batch.config_runtime.detach().cpu().numpy())
 
                 loss = self.loss_op(pred, batch.config_runtime)
 
@@ -183,7 +191,7 @@ class Trainer:
                 self.logger.add_scalar("train/data_load_dur", data_load_dur, self.iteration)
                 self.logger.add_scalar("train/forward_backward_dur", forward_backward_dur, self.iteration)
 
-                iters_per_val = 200
+                iters_per_val = 400
                 if self.iteration % iters_per_val == iters_per_val - 1:
                     self.validate()
                     validation_ts = time.time()
@@ -198,7 +206,8 @@ class Trainer:
                     exit_training = True
                     break
             
-            torch.save(self.model.state_dict(), "latest.pth")
+            torch.save(self.model.state_dict(),
+                       os.path.join(self.artefact_dir, "latest.pth"))
             
             epoch += (self.oversample_factor
                       if self.oversample_factor is not None else 1)
@@ -206,12 +215,17 @@ class Trainer:
         self.test("end_of_train_submission.csv")
     
     def validate(self):
-        self._validate('valid', "submission_val_automatic.csv")
+        print("Validating...")
+        self._validate('valid', "submission_val_auto.csv")
+        self._validate('test', "submission_test_auto.csv")
+        print("Validation done")
     
     def test(self, submission_csv_path: str):
+        print("Testing...")
         self._validate('valid', submission_csv_path+"_val.csv")
         self._validate('test', submission_csv_path)
-    
+        print("Testing done")
+
     def _validate(self, split: str,
                   submission_csv_path: Optional[str] = None):
 
@@ -236,6 +250,9 @@ class Trainer:
             submission_ranks = np.argsort(pred_all)
             submission_dict[name] = submission_ranks
 
+        if self.artefact_dir is not None:
+            submission_csv_path = os.path.join(self.artefact_dir,
+                                               submission_csv_path)
         self.save_submission(submission_dict, submission_csv_path)
         print(f"Saved to {submission_csv_path}")
     
@@ -370,10 +387,12 @@ def main():
                         help='In training mode, start with the provided .pth')
     parser.add_argument('--test-val-submission-csv', action='store', type=str,
                         help='Provide submission_val.csv, get score')
+    parser.add_argument('--collection', action='store', type=str,
+                        help='One of 4 collections. Default layout-xla-random if not set')
 
     args = parser.parse_args()
 
-    trainer = Trainer()
+    trainer = Trainer(args.collection)
     if args.test_snapshot is not None:
         trainer.load_snapshot(args.test_snapshot)
         trainer.test("test_submission.csv")

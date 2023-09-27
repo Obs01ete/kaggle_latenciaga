@@ -1,12 +1,20 @@
 import os
 import numpy as np
 from pathlib import Path
-from typing import Optional, Dict, Tuple, Union
+from typing import Optional, Dict, Tuple, Union, Any
 from functools import lru_cache
+import random
 
 import torch
 from torch_geometric.data import Data, Batch
 from torch_geometric.data.dataset import Dataset
+
+
+def random_sample(d: Dict[Any, Any], num) -> Dict[Any, Any]:
+    indices = list(np.random.choice(np.arange(len(d)), size=num))
+    indices.sort()
+    do = {i: d[idx] for i, idx in enumerate(indices)}
+    return do
 
 
 class LayoutData(Dataset):
@@ -28,6 +36,8 @@ class LayoutData(Dataset):
     ]
 
     FOLLOW_BATCH_KEYS = ["node_config_feat", "node_config_ids"]
+
+    MAX_VAL_SAMPLES = 200_000
 
     def __init__(
             self,
@@ -87,6 +97,16 @@ class LayoutData(Dataset):
                         file_path=file_path,
                         config_idx=config_idx)
                     idx += 1
+
+            if len(self.map_idx_to_name_and_config) > self.MAX_VAL_SAMPLES:
+                print(f"Random sampling val {len(self.map_idx_to_name_and_config)} "
+                      f"to {self.MAX_VAL_SAMPLES} samples")
+                self.map_idx_to_name_and_config = \
+                    random_sample(self.map_idx_to_name_and_config,
+                                  self.MAX_VAL_SAMPLES)
+            else:
+                print(f"Running on all validation samples")
+
             self._len = len(self.map_idx_to_name_and_config)
         pass
 
