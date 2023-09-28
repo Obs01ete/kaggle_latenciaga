@@ -37,7 +37,7 @@ class LayoutData(Dataset):
 
     FOLLOW_BATCH_KEYS = ["node_config_feat", "node_config_ids"]
 
-    MAX_VAL_SAMPLES = 200_000
+    MAX_VAL_SAMPLES = 80_000
 
     def __init__(
             self,
@@ -105,7 +105,7 @@ class LayoutData(Dataset):
                     random_sample(self.map_idx_to_name_and_config,
                                   self.MAX_VAL_SAMPLES)
             else:
-                print(f"Running on all validation samples")
+                print(f"Using all validation samples")
 
             self._len = len(self.map_idx_to_name_and_config)
         pass

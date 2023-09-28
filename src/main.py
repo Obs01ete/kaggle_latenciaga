@@ -110,7 +110,7 @@ class Trainer:
 
         datetime_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         art_dir_name = (f"{datetime_str}_{self.collection}" +
-                        f"_{self.tag}" if self.tag is not None else "")
+                        (f"_{self.tag}" if self.tag is not None else ""))
         self.artefact_dir = os.path.join("runs", art_dir_name)
         os.makedirs(self.artefact_dir, exist_ok=True)
 
