@@ -38,7 +38,10 @@ def worker_init_fn(worker_id: int) -> None:
 class Trainer:
     def __init__(self,
                  collection: Optional[str] = None,
+                 tag: Optional[str] = None,
                  debug: bool = False):
+
+        self.tag = tag
         self.debug = debug
     
         data_root = Path("/home/khizbud/latenciaga/data/npz_all/npz")
@@ -106,8 +109,9 @@ class Trainer:
         print("Start training")
 
         datetime_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        self.artefact_dir = os.path.join("runs",
-                                         f"{datetime_str}_{self.collection}")
+        art_dir_name = (f"{datetime_str}_{self.collection}" +
+                        f"_{self.tag}" if self.tag is not None else "")
+        self.artefact_dir = os.path.join("runs", art_dir_name)
         os.makedirs(self.artefact_dir, exist_ok=True)
 
         if self.logger is None:
@@ -389,10 +393,12 @@ def main():
                         help='Provide submission_val.csv, get score')
     parser.add_argument('--collection', action='store', type=str,
                         help='One of 4 collections. Default layout-xla-random if not set')
-
+    parser.add_argument('--tag', action='store', type=str,
+                        help='Extra suffix to put on the artefact dir name')
+    parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
 
-    trainer = Trainer(args.collection)
+    trainer = Trainer(args.collection, args.tag, args.debug)
     if args.test_snapshot is not None:
         trainer.load_snapshot(args.test_snapshot)
         trainer.test("test_submission.csv")
