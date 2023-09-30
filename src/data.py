@@ -9,6 +9,8 @@ import torch
 from torch_geometric.data import Data, Batch
 from torch_geometric.data.dataset import Dataset
 
+from src.utils import make_diff_matrix, triu_vector
+
 
 def random_sample(d: Dict[Any, Any], num) -> Dict[Any, Any]:
     indices = list(np.random.choice(np.arange(len(d)), size=num))
@@ -136,6 +138,8 @@ class LayoutData(Dataset):
         if self.map_idx_to_name_and_config is None: # train
             assert self.microbatch_size is not None
 
+            microbatch_size = self.microbatch_size
+
             file_path = self.file_name_list[idx]
             single_data = self._get_single(file_path)
 
@@ -146,19 +150,26 @@ class LayoutData(Dataset):
             num_configs = single_data.node_config_feat.shape[0]
 
             chosen = np.random.choice(np.arange(num_configs),
-                                    self.microbatch_size,
-                                    replace=False)
+                                      microbatch_size,
+                                      replace=False)
+            chosen_node_config_feat = single_data.node_config_feat[chosen]
+            chosen_config_runtime = single_data.config_runtime[chosen]
+            chosen_config_runtime_sec = RUNTIME_SCALE_TO_SEC * chosen_config_runtime
+
+            diff_matrix_sec = make_diff_matrix(chosen_config_runtime_sec).unsqueeze(0)
+            diff_triu_vector_sec = triu_vector(diff_matrix_sec.squeeze(0)).unsqueeze(0)
+
             data_list = []
             for imb in range(self.microbatch_size):
-                chosen_node_config_feat = single_data.node_config_feat[chosen]
-                chosen_config_runtime = single_data.config_runtime[chosen]
-
                 data = Data(edge_index=single_data.edge_index)
                 data.node_feat = single_data.node_feat
                 data.node_opcode = single_data.node_opcode
                 data.node_config_feat = chosen_node_config_feat[imb]
                 data.node_config_ids = single_data.node_config_ids
-                data.config_runtime = RUNTIME_SCALE_TO_SEC * chosen_config_runtime[imb]
+                data.config_runtime = chosen_config_runtime_sec[imb]
+                # We have to put the diff_matrix in every sample
+                # of the microbatch for batching to work correctly.
+                data.diff_triu_vector = diff_triu_vector_sec
                 data.fname = single_data.fname
                 # node_splits not going to use
 

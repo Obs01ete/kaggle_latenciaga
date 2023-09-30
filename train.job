@@ -6,7 +6,7 @@
 #SBATCH -e /ibex/ai/home/khizbud/latenciaga/slurm_logs/output.%J.err
 #SBATCH --mail-user=dmitrii.khizbullin@kaust.edu.sa
 #SBATCH --mail-type=END,FAIL
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 #SBATCH --mem=200G
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:a100:1
@@ -16,9 +16,6 @@
 module purge
 conda activate latenciaga4
 
-TAG=notag
+TAG=triu_margin_rank
 
-# PYTHONPATH=. python src/main.py
-# PYTHONPATH=. python src/main.py --start-from-pth=good_0924.pth
-
-PYTHONPATH=. python src/main.py --tag=${SLURM_JOB_ID}_${TAG}
+PYTHONPATH=. python src/main.py --collection=layout-nlp-random --tag=${SLURM_JOB_ID}_${TAG}

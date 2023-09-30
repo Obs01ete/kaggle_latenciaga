@@ -12,6 +12,7 @@ import torch
 from torch.utils.tensorboard.writer import SummaryWriter
 from torch_geometric.data import Data, Batch
 from torch.utils.data import DataLoader
+import torch.nn.functional as F
 
 from torchmetrics.functional.regression import kendall_rank_corrcoef
 from torchmetrics import MeanAbsolutePercentageError
@@ -97,8 +98,7 @@ class Trainer:
         # microbatches in batch. real batch is batch_size*microbatch_size
         self.batch_size = 10
 
-        self.model = Model(self.full_batch_size,
-                           self.microbatch_size)
+        self.model = Model()
         self.model.to(self.device)
 
         self.val_batch_size = 40
@@ -146,6 +146,14 @@ class Trainer:
         print("torch.get_num_threads=", torch.get_num_threads())
         print("DataLoader num worker threads", self.worker_threads)
         
+        ranking_margin: float
+        if "-xla-" in self.collection:
+            ranking_margin = 1e-2 # sec
+        elif "-nlp-" in self.collection:
+            ranking_margin = 1.5e-4 # sec
+        else:
+            assert False, "Need to find good margin for tile"
+
         exit_training = False
         while True:
             if exit_training:
@@ -163,7 +171,7 @@ class Trainer:
 
                 self.model.train()
 
-                pred = self.model(
+                pred, pred_diff_mat = self.model(
                     batch.node_feat,
                     batch.node_opcode,
                     batch.batch,
@@ -174,13 +182,41 @@ class Trainer:
                     batch.node_config_feat_batch,
                     batch.node_config_feat_ptr,
 
-                    batch.edge_index)
+                    batch.edge_index,
+                    
+                    self.microbatch_size)
 
-                loss = self.loss_op(pred, batch.config_runtime)
+                loss_mape = self.loss_op(pred, batch.config_runtime)
 
-                loss_val = loss.detach().cpu().item()
-                print(f"Train loss = {loss_val:.5f}")
+                # We store #ub_size duplicates of diff_triu_vector
+                # because of the technicalities of batching.
+                # In actuality we need only one of them for microbatch.
+                diff_triu_vector_per_ub = \
+                    batch.diff_triu_vector[::self.microbatch_size]
+
+                # batch.config_runtime.mean()=2.4 for xla
+                # batch.config_runtime.mean()=0.03 for nlp
+
+                # loss_diff_mat is 1.0 tops
+                loss_diff_mat = (1/ranking_margin) * F.margin_ranking_loss(
+                    pred_diff_mat,
+                    torch.zeros_like(pred_diff_mat),
+                    torch.sign(diff_triu_vector_per_ub),
+                    margin=ranking_margin)
+                
+                diff_mat_loss_scale = 1.0
+                loss_diff_mat_sc = diff_mat_loss_scale * loss_diff_mat
+                loss = loss_mape + loss_diff_mat_sc
+
+                loss_val = loss.item()
+                loss_mape_val = loss_mape.item()
+                loss_diff_mat_sc_val = loss_diff_mat_sc.item()
+                print(f"Train loss = {loss_val:.5f}, "
+                      f"loss_mape = {loss_mape_val:.5f}, "
+                      f"loss_diff_mat_sc = {loss_diff_mat_sc_val:.5f}, ")
                 self.logger.add_scalar("train/loss", loss_val, self.iteration)
+                self.logger.add_scalar("train/loss_mape", loss_mape, self.iteration)
+                self.logger.add_scalar("train/loss_diff_mat_sc", loss_diff_mat_sc, self.iteration)
 
                 kendall, p_value = kendall_rank_corrcoef(
                     pred, batch.config_runtime,
@@ -289,7 +325,7 @@ class Trainer:
             self.model.eval()
 
             with torch.no_grad():
-                pred = self.model(
+                pred, _ = self.model(
                     batch.node_feat,
                     batch.node_opcode,
                     batch.batch,
@@ -300,7 +336,10 @@ class Trainer:
                     batch.node_config_feat_batch,
                     batch.node_config_feat_ptr,
 
-                    batch.edge_index)
+                    batch.edge_index,
+                    
+                    ub_size=1 # microbatch is 1 for val/test
+                    )
 
                 if split == 'valid':
                     loss = self.loss_op(pred, batch.config_runtime)
