@@ -2,6 +2,13 @@
 
 https://www.kaggle.com/competitions/predict-ai-model-runtime
 
+### Run experiment in docker
+```shell
+docker build -t latenciaga:0.1.0 -f Dockerfile .
+docker run -it -v /mnt:/mnt --name latenciaga_cont latenciaga:0.1.0 bash
+PYTHONPATH=. python3 src/main.py --source-data-path=/mnt/path/to/your/data/npz_all/npz/
+```
+
 Reliable:
 ```
 conda create -n latenciaga python=3.9

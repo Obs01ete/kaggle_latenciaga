@@ -37,14 +37,20 @@ def worker_init_fn(worker_id: int) -> None:
 
 class Trainer:
     def __init__(self,
+                 source_data_path: Optional[str] = None,
                  collection: Optional[str] = None,
                  tag: Optional[str] = None,
                  debug: bool = False):
 
         self.tag = tag
         self.debug = debug
+
+        DEFAULT_DATA_PATH = "/home/khizbud/latenciaga/data/npz_all/npz"
+
+        if source_data_path is None:
+            source_data_path = DEFAULT_DATA_PATH
     
-        data_root = Path("/home/khizbud/latenciaga/data/npz_all/npz")
+        data_root = Path(source_data_path).expanduser()
 
         self.microbatch_size = 4
 
@@ -385,6 +391,8 @@ class Trainer:
 
 def main():
     parser = ArgumentParser(description='Latenciaga')
+    parser.add_argument('--source-data-path', action='store', type=str,
+                        help='Provide path to data folder in format */data/npz_all/npz')
     parser.add_argument('--test-snapshot', action='store', type=str,
                         help='Provide .pth, get submission.csv')
     parser.add_argument('--start-from-pth', action='store', type=str,
@@ -398,7 +406,7 @@ def main():
     parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
 
-    trainer = Trainer(args.collection, args.tag, args.debug)
+    trainer = Trainer(args.source_data_path, args.collection, args.tag, args.debug)
     if args.test_snapshot is not None:
         trainer.load_snapshot(args.test_snapshot)
         trainer.test("test_submission.csv")
