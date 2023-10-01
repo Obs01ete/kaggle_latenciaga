@@ -39,6 +39,11 @@ def worker_init_fn(worker_id: int) -> None:
 class Trainer:
     def __init__(self,
                  source_data_path: Optional[str] = None,
+                 max_iterations: Optional[int] = None,
+                 batch_size: Optional[int] = None,
+                 microbatch_size: Optional[int] = None,
+                 val_batch_size: Optional[int] = None,
+                 oversample_factor: Optional[int] = None,
                  collection: Optional[str] = None,
                  tag: Optional[str] = None,
                  debug: bool = False):
@@ -46,22 +51,37 @@ class Trainer:
         self.tag = tag
         self.debug = debug
 
-        DEFAULT_DATA_PATH = "/home/khizbud/latenciaga/data/npz_all/npz"
-
-        if source_data_path is None:
-            source_data_path = DEFAULT_DATA_PATH
-    
-        data_root = Path(source_data_path).expanduser()
-
-        self.microbatch_size = 4
-
         if collection is None:
             self.collection = "layout-xla-random"
         else:
             self.collection = collection
-        print("collection=", self.collection)
+        print(f"{self.collection=}")
 
-        self.oversample_factor = 100 # 10 is good, crashes at 10 and 100
+        self.is_tile = "tile-" in self.collection
+
+        DEFAULT_DATA_PATH = "/home/khizbud/latenciaga/data/npz_all/npz"
+        DEFAULT_MAX_ITERATIONS = 400_000 if self.is_tile else 100_000
+        DEFAULT_BATCH_SIZE = 100 if self.is_tile else 10
+        DEFAULT_MICROBATCH_SIZE = 4
+        DEFAULT_VAL_BATCH_SIZE = 400 if self.is_tile else 40
+        DEFAULT_OVERSAMPLE_FACTOR = 100
+
+        if source_data_path is None:
+            self.source_data_path = DEFAULT_DATA_PATH
+        else:
+            self.source_data_path = source_data_path
+    
+        data_root = Path(self.source_data_path).expanduser()
+
+        if microbatch_size is None:
+            self.microbatch_size = DEFAULT_MICROBATCH_SIZE
+        else:
+            self.microbatch_size = microbatch_size
+
+        if oversample_factor is None:
+            self.oversample_factor = DEFAULT_OVERSAMPLE_FACTOR
+        else:
+            self.oversample_factor = oversample_factor
 
         self.train_data = LayoutData(
             data_root,
@@ -79,6 +99,11 @@ class Trainer:
             data_root,
             coll=self.collection,
             split="test")
+
+        if max_iterations is None:
+            self.max_iterations = DEFAULT_MAX_ITERATIONS
+        else:
+            self.max_iterations = max_iterations
         
         default_worker_threads = 16
 
@@ -94,16 +119,20 @@ class Trainer:
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         print("device=", self.device)
-        
-        self.is_tile = "tile-" in self.collection
 
         # microbatches in batch. real batch is batch_size*microbatch_size
-        self.batch_size = 100 if self.is_tile else 10
+        if batch_size is None:
+            self.batch_size = DEFAULT_BATCH_SIZE
+        else:
+            self.batch_size = batch_size
 
         self.model = Model(self.is_tile)
         self.model.to(self.device)
-
-        self.val_batch_size = 400 if self.is_tile else 40
+        
+        if val_batch_size is None:
+            self.val_batch_size = DEFAULT_VAL_BATCH_SIZE
+        else:
+            self.val_batch_size = val_batch_size
         self.test_batch_size = self.val_batch_size
 
         self.loss_op = MeanAbsolutePercentageError().to(self.device)
@@ -138,14 +167,13 @@ class Trainer:
             collate_fn=concat_premade_microbatches,
             worker_init_fn=worker_init_fn)
         
-        print("len(train_loader)=", len(train_loader))
+        print(f"{len(train_loader)=}")
         
         optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-3)
 
-        max_iterations = 400_000 if self.is_tile else 100_000
         epoch = 0
 
-        print("torch.get_num_threads=", torch.get_num_threads())
+        print(f"{torch.get_num_threads()=}")
         print("DataLoader num worker threads", self.worker_threads)
 
         # batch.config_runtime.mean()=2.4 for xla
@@ -239,7 +267,7 @@ class Trainer:
                 forward_backward_ts = time.time()
                 forward_backward_dur = forward_backward_ts - data_load_ts
 
-                print(f"data_load_dur={data_load_dur}, forward_backward_dur={forward_backward_dur}")
+                print(f"{data_load_dur=}, {forward_backward_dur=}")
                 self.logger.add_scalar("train/data_load_dur", data_load_dur, self.iteration)
                 self.logger.add_scalar("train/forward_backward_dur", forward_backward_dur, self.iteration)
 
@@ -248,13 +276,13 @@ class Trainer:
                     self.validate()
                     validation_ts = time.time()
                     validation_dur = validation_ts - forward_backward_ts
-                    print(f"validation_dur={validation_dur}")
+                    print(f"{validation_dur=}")
                     self.logger.add_scalar("val/validation_dur", validation_dur, self.iteration)
 
                 end_iter_ts = time.time()
 
                 self.iteration += 1
-                if self.iteration >= max_iterations:
+                if self.iteration >= self.max_iterations:
                     exit_training = True
                     break
             
@@ -444,6 +472,16 @@ def main():
     parser = ArgumentParser(description='Latenciaga')
     parser.add_argument('--source-data-path', action='store', type=str,
                         help='Provide path to data folder in format */data/npz_all/npz')
+    parser.add_argument('--max-iterations', '-i', action='store', type=int,
+                        help='Maximum number of iterations')
+    parser.add_argument('--batch-size', action='store', type=int,
+                        help='Batch size')
+    parser.add_argument('--microbatch-size', action='store', type=int,
+                        help='Micro batch size')
+    parser.add_argument('--val-batch-size', action='store', type=int,
+                        help='Validation batch size')
+    parser.add_argument('--oversample-factor', action='store', type=int,
+                        help='Oversample factor')
     parser.add_argument('--test-snapshot', action='store', type=str,
                         help='Provide .pth, get submission.csv')
     parser.add_argument('--start-from-pth', action='store', type=str,
@@ -457,7 +495,15 @@ def main():
     parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
 
-    trainer = Trainer(args.source_data_path, args.collection, args.tag, args.debug)
+    trainer = Trainer(source_data_path=args.source_data_path,
+                      max_iterations=args.max_iterations,
+                      batch_size=args.batch_size,
+                      microbatch_size=args.microbatch_size,
+                      val_batch_size=args.val_batch_size,
+                      oversample_factor=args.oversample_factor,
+                      collection=args.collection,
+                      tag=args.tag,
+                      debug=args.debug)
     if args.test_snapshot is not None:
         trainer.load_snapshot(args.test_snapshot)
         trainer.test("test_submission.csv")
