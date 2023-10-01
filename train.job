@@ -16,6 +16,6 @@
 module purge
 conda activate latenciaga4
 
-TAG=triu_margin_rank
+TAG=notag
 
-PYTHONPATH=. python src/main.py --collection=layout-nlp-random --tag=${SLURM_JOB_ID}_${TAG}
+PYTHONPATH=. python src/main.py --collection=tile-xla --tag=${SLURM_JOB_ID}_${TAG}

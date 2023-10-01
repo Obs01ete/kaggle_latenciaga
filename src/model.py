@@ -15,7 +15,9 @@ class Model(nn.Module):
     NUM_OPCODES = 120
 
     def __init__(self,
+                 is_tile: bool,
                  node_config_feat_size: int = 18,
+                 tile_config_feat_size: int = 24,
                  ):
 
         super().__init__()
@@ -28,9 +30,10 @@ class Model(nn.Module):
         self.node_opcode_embedding = nn.Embedding(self.NUM_OPCODES,
                                                   node_opcode_emb_size)
         
+        config_feat_size = tile_config_feat_size if is_tile else node_config_feat_size
         concat_node_feat_size = (node_feat_emb_size +
                                  node_opcode_emb_size +
-                                 node_config_feat_size)
+                                 config_feat_size)
         
         in_channels = 32
         channel_config = [64, 64, 128, 128, 256, 256]
@@ -58,8 +61,10 @@ class Model(nn.Module):
 
                 node_config_feat: torch.Tensor,
                 node_config_ids: torch.Tensor,
-                node_config_batch: torch.Tensor,
                 node_config_ptr: torch.Tensor,
+
+                config_feat: torch.Tensor,
+                config_feat_ptr: torch.Tensor,
                 
                 edge_index: torch.Tensor,
 
@@ -82,6 +87,8 @@ class Model(nn.Module):
                 )
         """
 
+        is_tile = config_feat is not None
+
         SCALE_MS_TO_SEC = 1e-3
 
         batch_size = ptr.shape[0] - 1
@@ -90,24 +97,38 @@ class Model(nn.Module):
                   f"by microbatch size {ub_size}. "
                   f"Fine for val, error for train.")
         num_nodes = node_feat.shape[0]
-        num_configs = node_config_feat.shape[0]
-        config_feat_size = node_config_feat.shape[1]
+        if is_tile:
+            config_feat_size = config_feat.shape[0] // batch_size
+        else:
+            config_feat_size = node_config_feat.shape[1]
 
         node_feat_abs = torch.relu(node_feat) # discard negative numbers
         node_feat_log = torch.log1p(node_feat_abs)
         node_feat_emb = self.node_feat_embedding(node_feat_log)
         node_opcode_emb = self.node_opcode_embedding(node_opcode.long())
-        config_feat_all = torch.zeros(size=(num_nodes, config_feat_size),
-                                      dtype=torch.float32, device=node_feat.device)
 
-        for ib in range(batch_size):
-            config_slice = slice(node_config_ptr[ib],
-                                 node_config_ptr[ib+1])
-            sample_config_ids = node_config_ids[config_slice]
-            sample_config_feat = node_config_feat[config_slice]
-            
-            global_config_ids = sample_config_ids + ptr[ib]
-            config_feat_all[global_config_ids, :] = sample_config_feat
+        if is_tile:
+            graph_config_list = []
+            for ib in range(batch_size):
+                config_slice = slice(config_feat_ptr[ib],
+                                     config_feat_ptr[ib+1])
+                num_nodes_in_graph = ptr[ib+1] - ptr[ib]
+                graph_config = config_feat[config_slice]
+                graph_config_tiled = torch.tile(graph_config.unsqueeze(0),
+                                                (num_nodes_in_graph, 1))
+                graph_config_list.append(graph_config_tiled)
+            config_feat_all = torch.concat(graph_config_list)
+        else:
+            config_feat_all = torch.zeros(size=(num_nodes, config_feat_size),
+                                        dtype=torch.float32, device=node_feat.device)
+            for ib in range(batch_size):
+                config_slice = slice(node_config_ptr[ib],
+                                    node_config_ptr[ib+1])
+                sample_config_ids = node_config_ids[config_slice]
+                sample_config_feat = node_config_feat[config_slice]
+                
+                global_config_ids = sample_config_ids + ptr[ib]
+                config_feat_all[global_config_ids, :] = sample_config_feat
 
         node_feat_all = torch.cat((node_feat_emb,
                                    node_opcode_emb,

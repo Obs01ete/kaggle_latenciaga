@@ -95,13 +95,15 @@ class Trainer:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         print("device=", self.device)
         
-        # microbatches in batch. real batch is batch_size*microbatch_size
-        self.batch_size = 10
+        self.is_tile = "tile-" in self.collection
 
-        self.model = Model()
+        # microbatches in batch. real batch is batch_size*microbatch_size
+        self.batch_size = 100 if self.is_tile else 10
+
+        self.model = Model(self.is_tile)
         self.model.to(self.device)
 
-        self.val_batch_size = 40
+        self.val_batch_size = 400 if self.is_tile else 40
         self.test_batch_size = self.val_batch_size
 
         self.loss_op = MeanAbsolutePercentageError().to(self.device)
@@ -145,14 +147,19 @@ class Trainer:
 
         print("torch.get_num_threads=", torch.get_num_threads())
         print("DataLoader num worker threads", self.worker_threads)
-        
+
+        # batch.config_runtime.mean()=2.4 for xla
+        # batch.config_runtime.mean()=0.03 for nlp
+        # batch.config_runtime.mean()=0.015 for tile
+
         ranking_margin: float
         if "-xla-" in self.collection:
             ranking_margin = 1e-2 # sec
         elif "-nlp-" in self.collection:
             ranking_margin = 1.5e-4 # sec
         else:
-            assert False, "Need to find good margin for tile"
+            # Need to find good margin for tile
+            ranking_margin = 7.5e-5 # sec
 
         exit_training = False
         while True:
@@ -177,10 +184,12 @@ class Trainer:
                     batch.batch,
                     batch.ptr,
 
-                    batch.node_config_feat,
-                    batch.node_config_ids,
-                    batch.node_config_feat_batch,
-                    batch.node_config_feat_ptr,
+                    batch.node_config_feat if not self.is_tile else None,
+                    batch.node_config_ids if not self.is_tile else None,
+                    batch.node_config_feat_ptr if not self.is_tile else None,
+
+                    batch.config_feat if self.is_tile else None,
+                    batch.config_feat_ptr if self.is_tile else None,
 
                     batch.edge_index,
                     
@@ -193,9 +202,6 @@ class Trainer:
                 # In actuality we need only one of them for microbatch.
                 diff_triu_vector_per_ub = \
                     batch.diff_triu_vector[::self.microbatch_size]
-
-                # batch.config_runtime.mean()=2.4 for xla
-                # batch.config_runtime.mean()=0.03 for nlp
 
                 # loss_diff_mat is 1.0 tops
                 loss_diff_mat = (1/ranking_margin) * F.margin_ranking_loss(
@@ -237,7 +243,7 @@ class Trainer:
                 self.logger.add_scalar("train/data_load_dur", data_load_dur, self.iteration)
                 self.logger.add_scalar("train/forward_backward_dur", forward_backward_dur, self.iteration)
 
-                iters_per_val = 400
+                iters_per_val = 10_000 if self.is_tile else 400
                 if self.iteration % iters_per_val == iters_per_val - 1:
                     self.validate()
                     validation_ts = time.time()
@@ -268,8 +274,8 @@ class Trainer:
     
     def test(self, submission_csv_path: str):
         print("Testing...")
-        self._validate('valid', submission_csv_path+"_val.csv")
         self._validate('test', submission_csv_path)
+        self._validate('valid', submission_csv_path+"_val.csv")
         print("Testing done")
 
     def _validate(self, split: str,
@@ -294,6 +300,8 @@ class Trainer:
             pred_all = np.array(dol['pred_list'], dtype=np.float32)
             # NB: pred_all are guaranteed to be sequential by DataLoader
             submission_ranks = np.argsort(pred_all)
+            if self.is_tile:
+                submission_ranks = submission_ranks[:5]
             submission_dict[name] = submission_ranks
 
         if self.artefact_dir is not None:
@@ -303,11 +311,13 @@ class Trainer:
         print(f"Saved to {submission_csv_path}")
     
     def _make_predictions(self, split: str):
+        worker_threads = (self.worker_threads if self.is_tile
+                          else self.worker_threads // 4)
         loader = DataLoader(
             self.val_data if split == 'valid' else self.test_data,
             batch_size=self.val_batch_size,
             shuffle=False,
-            num_workers=self.worker_threads // 4,
+            num_workers=worker_threads,
             pin_memory=True,
             collate_fn=concat_premade_microbatches,
             worker_init_fn=worker_init_fn)
@@ -331,10 +341,12 @@ class Trainer:
                     batch.batch,
                     batch.ptr,
 
-                    batch.node_config_feat,
-                    batch.node_config_ids,
-                    batch.node_config_feat_batch,
-                    batch.node_config_feat_ptr,
+                    batch.node_config_feat if not self.is_tile else None,
+                    batch.node_config_ids if not self.is_tile else None,
+                    batch.node_config_feat_ptr if not self.is_tile else None,
+
+                    batch.config_feat if self.is_tile else None,
+                    batch.config_feat_ptr if self.is_tile else None,
 
                     batch.edge_index,
                     

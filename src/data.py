@@ -37,9 +37,9 @@ class LayoutData(Dataset):
         "tile-xla"
     ]
 
-    FOLLOW_BATCH_KEYS = ["node_config_feat", "node_config_ids"]
-
-    MAX_VAL_SAMPLES = 80_000
+    FOLLOW_BATCH_KEYS = ["node_config_feat",
+                         "node_config_ids",
+                         "config_feat"]
 
     def __init__(
             self,
@@ -66,6 +66,10 @@ class LayoutData(Dataset):
         self.coll = coll
         assert split in self.SPLIT
         self.split = split
+
+        self.is_tile = "tile-" in coll
+
+        MAX_VAL_SAMPLES = 2_000_000 if self.is_tile else 80_000
 
         self.microbatch_size = microbatch_size
 
@@ -100,12 +104,12 @@ class LayoutData(Dataset):
                         config_idx=config_idx)
                     idx += 1
 
-            if len(self.map_idx_to_name_and_config) > self.MAX_VAL_SAMPLES:
+            if len(self.map_idx_to_name_and_config) > MAX_VAL_SAMPLES:
                 print(f"Random sampling val {len(self.map_idx_to_name_and_config)} "
-                      f"to {self.MAX_VAL_SAMPLES} samples")
+                      f"to {MAX_VAL_SAMPLES} samples")
                 self.map_idx_to_name_and_config = \
                     random_sample(self.map_idx_to_name_and_config,
-                                  self.MAX_VAL_SAMPLES)
+                                  MAX_VAL_SAMPLES)
             else:
                 print(f"Using all validation samples")
 
@@ -147,12 +151,19 @@ class LayoutData(Dataset):
             # node_config_feat=[47712, 26, 18], node_config_ids=[26],
             # config_runtime=[47712], node_splits=[1, 3])'
 
-            num_configs = single_data.node_config_feat.shape[0]
+            if self.is_tile:
+                num_configs = single_data.config_feat.shape[0]
+            else:
+                num_configs = single_data.node_config_feat.shape[0]
 
+            # enabled replace=True for all, so that tile does not crash
             chosen = np.random.choice(np.arange(num_configs),
                                       microbatch_size,
-                                      replace=False)
-            chosen_node_config_feat = single_data.node_config_feat[chosen]
+                                      replace=True)
+            if self.is_tile:
+                chosen_config_feat = single_data.config_feat[chosen]
+            else:
+                chosen_config_feat = single_data.node_config_feat[chosen]
             chosen_config_runtime = single_data.config_runtime[chosen]
             chosen_config_runtime_sec = RUNTIME_SCALE_TO_SEC * chosen_config_runtime
 
@@ -164,8 +175,11 @@ class LayoutData(Dataset):
                 data = Data(edge_index=single_data.edge_index)
                 data.node_feat = single_data.node_feat
                 data.node_opcode = single_data.node_opcode
-                data.node_config_feat = chosen_node_config_feat[imb]
-                data.node_config_ids = single_data.node_config_ids
+                if self.is_tile:
+                    data.config_feat = chosen_config_feat[imb]
+                else:
+                    data.node_config_feat = chosen_config_feat[imb]
+                    data.node_config_ids = single_data.node_config_ids
                 data.config_runtime = chosen_config_runtime_sec[imb]
                 # We have to put the diff_matrix in every sample
                 # of the microbatch for batching to work correctly.
@@ -187,8 +201,12 @@ class LayoutData(Dataset):
             data = Data(edge_index=single_data.edge_index)
             data.node_feat = single_data.node_feat
             data.node_opcode = single_data.node_opcode
-            data.node_config_feat = single_data.node_config_feat[config_idx]
-            data.node_config_ids = single_data.node_config_ids
+
+            if self.is_tile:
+                data.config_feat = single_data.config_feat[config_idx]
+            else:
+                data.node_config_feat = single_data.node_config_feat[config_idx]
+                data.node_config_ids = single_data.node_config_ids
             data.config_runtime = RUNTIME_SCALE_TO_SEC * single_data.config_runtime[config_idx]
             data.fname = single_data.fname
 
