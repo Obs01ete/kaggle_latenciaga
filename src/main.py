@@ -142,7 +142,7 @@ class Trainer:
         
         optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-3)
 
-        max_iterations = 100_000 # 40_000, 10k iter=6h
+        max_iterations = 400_000 if self.is_tile else 100_000
         epoch = 0
 
         print("torch.get_num_threads=", torch.get_num_threads())
