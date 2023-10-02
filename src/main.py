@@ -19,6 +19,7 @@ from torchmetrics import MeanAbsolutePercentageError
 
 from src.data import LayoutData
 from src.model import Model
+from src.wandb_support import init_wandb, try_upload_artefacts
 
 
 def concat_premade_microbatches(microbatch_list: Sequence[Batch]):
@@ -288,6 +289,8 @@ class Trainer:
             
             torch.save(self.model.state_dict(),
                        os.path.join(self.artefact_dir, "latest.pth"))
+
+            try_upload_artefacts(self.artefact_dir)
             
             epoch += (self.oversample_factor
                       if self.oversample_factor is not None else 1)
@@ -493,6 +496,7 @@ def main():
     parser.add_argument('--tag', action='store', type=str,
                         help='Extra suffix to put on the artefact dir name')
     parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--enable-wandb', action='store_true')
     args = parser.parse_args()
 
     trainer = Trainer(source_data_path=args.source_data_path,
@@ -513,6 +517,8 @@ def main():
         if args.start_from_pth is not None:
             trainer.load_snapshot(args.start_from_pth)
             print(f"Loading snapshot from {args.start_from_pth}")
+        if args.enable_wandb:
+            init_wandb(debug=args.debug)
         trainer.train()
     print("Done")
 

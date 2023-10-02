@@ -1,0 +1,8 @@
+FROM pytorch/pytorch:2.0.1-cuda11.7-cudnn8-runtime
+
+RUN apt-get update && apt install unzip
+
+COPY ./setup.cfg /latenciaga/setup.cfg
+COPY ./pyproject.toml /latenciaga/pyproject.toml
+
+RUN cd /latenciaga && python3 -m pip install .
