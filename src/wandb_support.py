@@ -4,8 +4,8 @@ import os
 
 try:
     import wandb
-except Exception("[WARNING]: Module wandb is not installed"):
-    pass
+except Exception as ex:
+    print(f"Info: wandb not found, proceeding without wandb")
 
 
 def init_wandb(debug=False):
