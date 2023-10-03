@@ -19,6 +19,7 @@ from torchmetrics import MeanAbsolutePercentageError
 
 from src.data import LayoutData
 from src.model import Model
+from src.metrics import tile_topk_metric
 from src.wandb_support import init_wandb, try_upload_artefacts
 
 
@@ -480,6 +481,7 @@ class Trainer:
 
         kendall_grand_list = []
         p_value_grand_list = []
+        tile_topk_list = []
         for name, dol in prediction_dict.items():
             pred_all = np.array(dol['pred_list'], dtype=np.float32)
             target_all = np.array(dol['target_list'], dtype=np.float32)
@@ -490,11 +492,17 @@ class Trainer:
 
             kendall_grand_list.append(kendall.item())
             p_value_grand_list.append(p_value.item())
+            if self.is_tile:
+                tile_metric = tile_topk_metric(torch.tensor(pred_all), torch.tensor(target_all))
+                tile_topk_list.append(tile_metric.item())
 
         kendall_grand = np.mean(kendall_grand_list)
         p_value_grand = np.mean(p_value_grand_list)
-
         print(f"{split} kendall=", kendall_grand.item(), "p_value=", p_value_grand.item())
+        if self.is_tile:
+            tile_topk_grand = np.mean(tile_topk_list).item()
+            print(f"{split} tile_top_k=", tile_topk_grand)
+            self.logger.add_scalar("val/tile_top_k", tile_topk_grand, self.iteration)
         if self.logger is not None:
             self.logger.add_scalar("val/loss", loss_grand, self.iteration)
             self.logger.add_scalar("val/kendall", kendall_grand.item(), self.iteration)
