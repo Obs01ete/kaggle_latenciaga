@@ -66,6 +66,7 @@ class Trainer:
         DEFAULT_MICROBATCH_SIZE = 4
         DEFAULT_VAL_BATCH_SIZE = 400 if self.is_tile else 40
         DEFAULT_OVERSAMPLE_FACTOR = 100
+        DEFAULT_ITERS_PER_VAL = 10_000 if self.is_tile else 400
 
         if source_data_path is None:
             self.source_data_path = DEFAULT_DATA_PATH
@@ -83,6 +84,8 @@ class Trainer:
             self.oversample_factor = DEFAULT_OVERSAMPLE_FACTOR
         else:
             self.oversample_factor = oversample_factor
+
+        self.iters_per_val = DEFAULT_ITERS_PER_VAL
 
         self.train_data = LayoutData(
             data_root,
@@ -181,6 +184,8 @@ class Trainer:
         # batch.config_runtime.mean()=0.03 for nlp
         # batch.config_runtime.mean()=0.015 for tile
 
+        # good ranking_margin = batch.config_runtime.mean / 200
+
         ranking_margin: float
         if "-xla-" in self.collection:
             ranking_margin = 1e-2 # sec
@@ -200,8 +205,10 @@ class Trainer:
                 data_load_ts = time.time()
                 data_load_dur = data_load_ts - end_iter_ts
 
-                print("-"*80)
-                print(self.iteration, batch)
+                train_print_interval = 10
+                if self.iteration % train_print_interval == 0:
+                    print("-"*80)
+                    print(self.iteration, batch)
 
                 batch = batch.to(self.device, non_blocking=True)
 
@@ -237,29 +244,39 @@ class Trainer:
                     pred_diff_mat,
                     torch.zeros_like(pred_diff_mat),
                     torch.sign(diff_triu_vector_per_ub),
-                    margin=ranking_margin)
-                
+                    margin=ranking_margin,
+                    reduce=False)
+
+                nz_diff_loss_frac = ((loss_diff_mat > 1e-6).sum() /
+                                          loss_diff_mat.numel())
+
+                loss_diff_mat_red = torch.mean(loss_diff_mat)
+
                 diff_mat_loss_scale = 1.0
-                loss_diff_mat_sc = diff_mat_loss_scale * loss_diff_mat
+                loss_diff_mat_sc = diff_mat_loss_scale * loss_diff_mat_red
                 loss = loss_mape + loss_diff_mat_sc
 
-                loss_val = loss.item()
-                loss_mape_val = loss_mape.item()
-                loss_diff_mat_sc_val = loss_diff_mat_sc.item()
-                print(f"Train loss = {loss_val:.5f}, "
-                      f"loss_mape = {loss_mape_val:.5f}, "
-                      f"loss_diff_mat_sc = {loss_diff_mat_sc_val:.5f}, ")
-                self.logger.add_scalar("train/loss", loss_val, self.iteration)
-                self.logger.add_scalar("train/loss_mape", loss_mape, self.iteration)
-                self.logger.add_scalar("train/loss_diff_mat_sc", loss_diff_mat_sc, self.iteration)
+                if self.iteration % train_print_interval == 0:
+                    loss_val = loss.item()
+                    loss_mape_val = loss_mape.item()
+                    loss_diff_mat_sc_val = loss_diff_mat_sc.item()
+                    print(f"Train loss = {loss_val:.5f}, "
+                        f"loss_mape = {loss_mape_val:.5f}, "
+                        f"loss_diff_mat_sc = {loss_diff_mat_sc_val:.5f}, "
+                        f"nz_diff_loss_frac = {nz_diff_loss_frac:.5f}"
+                        )
+                    self.logger.add_scalar("train/loss", loss_val, self.iteration)
+                    self.logger.add_scalar("train/loss_mape", loss_mape, self.iteration)
+                    self.logger.add_scalar("train/loss_diff_mat_sc", loss_diff_mat_sc, self.iteration)
+                    self.logger.add_scalar("train/nz_diff_loss_frac", nz_diff_loss_frac, self.iteration)
 
-                kendall, p_value = kendall_rank_corrcoef(
-                    pred, batch.config_runtime,
-                    t_test=True, alternative='two-sided')
-                print("kendall=", kendall.item(), "p_value=", p_value.item())
-                self.logger.add_scalar("train/kendall", kendall.item(), self.iteration)
-                self.logger.add_scalar("train/p_value", p_value.item(), self.iteration)
-                self.logger.add_scalar("train/epoch", epoch, self.iteration)
+                    kendall, p_value = kendall_rank_corrcoef(
+                        pred, batch.config_runtime,
+                        t_test=True, alternative='two-sided')
+                    print("kendall=", kendall.item(), "p_value=", p_value.item())
+                    self.logger.add_scalar("train/kendall", kendall.item(), self.iteration)
+                    self.logger.add_scalar("train/p_value", p_value.item(), self.iteration)
+                    self.logger.add_scalar("train/epoch", epoch, self.iteration)
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -268,12 +285,12 @@ class Trainer:
                 forward_backward_ts = time.time()
                 forward_backward_dur = forward_backward_ts - data_load_ts
 
-                print(f"{data_load_dur=}, {forward_backward_dur=}")
-                self.logger.add_scalar("train/data_load_dur", data_load_dur, self.iteration)
-                self.logger.add_scalar("train/forward_backward_dur", forward_backward_dur, self.iteration)
+                if self.iteration % train_print_interval == 0:
+                    print(f"{data_load_dur=}, {forward_backward_dur=}")
+                    self.logger.add_scalar("train/data_load_dur", data_load_dur, self.iteration)
+                    self.logger.add_scalar("train/forward_backward_dur", forward_backward_dur, self.iteration)
 
-                iters_per_val = 10_000 if self.is_tile else 400
-                if self.iteration % iters_per_val == iters_per_val - 1:
+                if self.iteration % self.iters_per_val == self.iters_per_val - 1:
                     self.validate()
                     validation_ts = time.time()
                     validation_dur = validation_ts - forward_backward_ts

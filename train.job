@@ -18,4 +18,4 @@ conda activate latenciaga4
 
 TAG=notag
 
-PYTHONPATH=. python src/main.py --collection=tile-xla --tag=${SLURM_JOB_ID}_${TAG}
+PYTHONPATH=. python src/main.py --collection=layout-xla-random --tag=${SLURM_JOB_ID}_${TAG}
