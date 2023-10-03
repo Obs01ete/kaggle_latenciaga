@@ -37,6 +37,45 @@ def worker_init_fn(worker_id: int) -> None:
         os.sched_setaffinity(0, range(cpu_count))
 
 
+# from transformers/src/transformers/trainer_pt_utils.py
+def get_parameter_names(model, forbidden_layer_types):
+    """
+    Returns the names of the model parameters that are not inside a forbidden layer.
+    """
+    result = []
+    for name, child in model.named_children():
+        result += [
+            f"{name}.{n}"
+            for n in get_parameter_names(child, forbidden_layer_types)
+            if not isinstance(child, tuple(forbidden_layer_types))
+        ]
+    # Add model specific parameters (defined with nn.Parameter) since they are not in any child.
+    result += list(model._parameters.keys())
+    return result
+
+
+def get_model_parameters(model: torch.nn.Module,
+                         weight_decay: float = 0,
+                         exclude_patterns: Optional[List[str]] = None
+                         ) -> List[Dict[str, List[torch.Tensor]]]:
+    decay_parameters = get_parameter_names(model, [torch.nn.LayerNorm])
+    decay_parameters = [name for name in decay_parameters if ".bias" not in name]
+    if exclude_patterns is not None:
+        decay_parameters = [name for name in decay_parameters
+                            if not any(pat in name for pat in exclude_patterns)]
+    optimizer_grouped_parameters = [
+        {
+            "params": [p for n, p in model.named_parameters() if n in decay_parameters],
+            "weight_decay": weight_decay,
+        },
+        {
+            "params": [p for n, p in model.named_parameters() if n not in decay_parameters],
+            "weight_decay": 0.0,
+        },
+    ]
+    return optimizer_grouped_parameters
+
+
 class Trainer:
     def __init__(self,
                  source_data_path: Optional[str] = None,
@@ -45,6 +84,7 @@ class Trainer:
                  microbatch_size: Optional[int] = None,
                  val_batch_size: Optional[int] = None,
                  oversample_factor: Optional[int] = None,
+                 weight_decay: Optional[float] = None,
                  collection: Optional[str] = None,
                  tag: Optional[str] = None,
                  debug: bool = False):
@@ -66,6 +106,7 @@ class Trainer:
         DEFAULT_MICROBATCH_SIZE = 4
         DEFAULT_VAL_BATCH_SIZE = 400 if self.is_tile else 40
         DEFAULT_OVERSAMPLE_FACTOR = 100
+        DEFAULT_WEIGHT_DECAY = 0.0
         DEFAULT_ITERS_PER_VAL = 10_000 if self.is_tile else 400
 
         if source_data_path is None:
@@ -84,6 +125,11 @@ class Trainer:
             self.oversample_factor = DEFAULT_OVERSAMPLE_FACTOR
         else:
             self.oversample_factor = oversample_factor
+
+        if weight_decay is not None:
+            self.weight_decay = weight_decay
+        else:
+            self.weight_decay = DEFAULT_WEIGHT_DECAY
 
         self.iters_per_val = DEFAULT_ITERS_PER_VAL
 
@@ -172,8 +218,13 @@ class Trainer:
             worker_init_fn=worker_init_fn)
         
         print(f"{len(train_loader)=}")
+
+        optimized_parameters = get_model_parameters(
+            self.model,
+            weight_decay=self.weight_decay,
+            exclude_patterns=["output_shaping"])
         
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-3)
+        optimizer = torch.optim.Adam(optimized_parameters, lr=1e-3)
 
         epoch = 0
 
@@ -502,6 +553,8 @@ def main():
                         help='Validation batch size')
     parser.add_argument('--oversample-factor', action='store', type=int,
                         help='Oversample factor')
+    parser.add_argument('--weight-decay', action='store', type=float,
+                        help='Weight decay')
     parser.add_argument('--test-snapshot', action='store', type=str,
                         help='Provide .pth, get submission.csv')
     parser.add_argument('--start-from-pth', action='store', type=str,
@@ -522,6 +575,7 @@ def main():
                       microbatch_size=args.microbatch_size,
                       val_batch_size=args.val_batch_size,
                       oversample_factor=args.oversample_factor,
+                      weight_decay=args.weight_decay,
                       collection=args.collection,
                       tag=args.tag,
                       debug=args.debug)
