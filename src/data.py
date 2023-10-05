@@ -8,6 +8,7 @@ import random
 import torch
 from torch_geometric.data import Data, Batch
 from torch_geometric.data.dataset import Dataset
+from torch_geometric.utils import to_undirected
 
 from src.utils import make_diff_matrix, triu_vector
 
@@ -48,6 +49,7 @@ class LayoutData(Dataset):
             split: str,
             microbatch_size: Optional[int] = None,
             oversample_factor: Optional[int] = None,
+            convert_to_undirected: bool = False
             ):
 
         super().__init__()
@@ -72,6 +74,8 @@ class LayoutData(Dataset):
         MAX_VAL_SAMPLES = 2_000_000 if self.is_tile else 80_000
 
         self.microbatch_size = microbatch_size
+
+        self.convert_to_undirected = convert_to_undirected
 
         self.data_dir = self._get_coll_root(coll)
         file_name_list = []
@@ -123,7 +127,13 @@ class LayoutData(Dataset):
     def _get_single(self, file_path: str) -> Data:
         npz_dict = dict(np.load(file_path))
 
-        data = Data(edge_index=torch.tensor(npz_dict["edge_index"].T).long())
+        edge_index = torch.tensor(npz_dict["edge_index"].T).long()
+
+        if self.convert_to_undirected:
+            edge_index, edge_labels = self._convert_graph_to_undirected(edge_index)
+            data = Data(edge_index=edge_index, edge_labels=edge_labels)
+        else:
+            data = Data(edge_index=edge_index)
 
         for name, array in npz_dict.items():
             if name == "edge_index":
@@ -185,6 +195,8 @@ class LayoutData(Dataset):
                 # of the microbatch for batching to work correctly.
                 data.diff_triu_vector = diff_triu_vector_sec
                 data.fname = single_data.fname
+                if self.convert_to_undirected:
+                    data.edge_labels = single_data.edge_labels
                 # node_splits not going to use
 
                 data_list.append(data)
@@ -209,6 +221,8 @@ class LayoutData(Dataset):
                 data.node_config_ids = single_data.node_config_ids
             data.config_runtime = RUNTIME_SCALE_TO_SEC * single_data.config_runtime[config_idx]
             data.fname = single_data.fname
+            if self.convert_to_undirected:
+                data.edge_labels = single_data.edge_labels
 
             microbatch = Batch.from_data_list([data], follow_batch=self.FOLLOW_BATCH_KEYS)
 
@@ -238,3 +252,19 @@ class LayoutData(Dataset):
         assert src in self.SRC
 
         return data_root
+
+    @staticmethod
+    def _convert_graph_to_undirected(directed: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Convert to undirected
+        undirected = to_undirected(directed)
+
+        # Create edge labels for the undirected graph
+        edge_labels = torch.ones(undirected.size(1), dtype=torch.float32)
+
+        # For every [v, u] edge in the undirected graph, set the label to -1
+        edge_map = set((u.item(), v.item()) for u, v in zip(directed[0], directed[1]))
+        for i, (u, v) in enumerate(zip(undirected[0], undirected[1])):
+            if (v.item(), u.item()) in edge_map:
+                edge_labels[i] = -1
+
+        return undirected, edge_labels
