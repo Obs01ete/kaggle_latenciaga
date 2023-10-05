@@ -322,12 +322,20 @@ class Trainer:
                     self.logger.add_scalar("train/loss_diff_mat_sc", loss_diff_mat_sc, self.iteration)
                     self.logger.add_scalar("train/nz_diff_loss_frac", nz_diff_loss_frac, self.iteration)
 
-                    kendall, p_value = kendall_rank_corrcoef(
-                        pred, batch.config_runtime,
-                        t_test=True, alternative='two-sided')
-                    print("kendall=", kendall.item(), "p_value=", p_value.item())
-                    self.logger.add_scalar("train/kendall", kendall.item(), self.iteration)
-                    self.logger.add_scalar("train/p_value", p_value.item(), self.iteration)
+                    kendall_list = []
+                    p_value_list = []
+                    for iub in range(self.batch_size):
+                        ub_slice = slice(iub*self.microbatch_size, (iub+1)*self.microbatch_size)
+                        kendall, p_value = kendall_rank_corrcoef(
+                            pred[ub_slice], batch.config_runtime[ub_slice],
+                            t_test=True, alternative='two-sided')
+                        kendall_list.append(kendall)
+                        p_value_list.append(p_value)
+                    kendall_total = torch.nanmean(torch.stack(kendall_list))
+                    p_value_total = torch.nanmean(torch.stack(p_value_list))
+                    print("kendall=", kendall_total.item(), "p_value=", p_value_total.item())
+                    self.logger.add_scalar("train/kendall", kendall_total.item(), self.iteration)
+                    self.logger.add_scalar("train/p_value", p_value_total.item(), self.iteration)
                     self.logger.add_scalar("train/epoch", epoch, self.iteration)
 
                 optimizer.zero_grad()
