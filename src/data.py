@@ -187,10 +187,12 @@ class LayoutData(Dataset):
                 data.node_opcode = single_data.node_opcode
                 if self.is_tile:
                     data.config_feat = chosen_config_feat[imb]
+                    data.config_runtime = single_data.config_runtime[chosen][imb] \
+                        / single_data.config_runtime_normalizers[chosen][imb]
                 else:
                     data.node_config_feat = chosen_config_feat[imb]
                     data.node_config_ids = single_data.node_config_ids
-                data.config_runtime = chosen_config_runtime_sec[imb]
+                    data.config_runtime = chosen_config_runtime_sec[imb]
                 # We have to put the diff_matrix in every sample
                 # of the microbatch for batching to work correctly.
                 data.diff_triu_vector = diff_triu_vector_sec
@@ -216,10 +218,12 @@ class LayoutData(Dataset):
 
             if self.is_tile:
                 data.config_feat = single_data.config_feat[config_idx]
+                data.config_runtime = single_data.config_runtime[config_idx] / single_data.config_runtime_normalizers[
+                    config_idx]
             else:
                 data.node_config_feat = single_data.node_config_feat[config_idx]
                 data.node_config_ids = single_data.node_config_ids
-            data.config_runtime = RUNTIME_SCALE_TO_SEC * single_data.config_runtime[config_idx]
+                data.config_runtime = RUNTIME_SCALE_TO_SEC * single_data.config_runtime[config_idx]
             data.fname = single_data.fname
             if self.convert_to_undirected:
                 data.edge_labels = single_data.edge_labels

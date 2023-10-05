@@ -104,7 +104,7 @@ class Trainer:
         DEFAULT_DATA_PATH = "/home/khizbud/latenciaga/data/npz_all/npz"
         DEFAULT_MAX_ITERATIONS = 400_000 if self.is_tile else 100_000
         DEFAULT_BATCH_SIZE = 100 if self.is_tile else 10
-        DEFAULT_MICROBATCH_SIZE = 4
+        DEFAULT_MICROBATCH_SIZE = 10 if self.is_tile else 4
         DEFAULT_VAL_BATCH_SIZE = 400 if self.is_tile else 40
         DEFAULT_OVERSAMPLE_FACTOR = 100
         DEFAULT_WEIGHT_DECAY = 0.0
@@ -283,7 +283,10 @@ class Trainer:
                     
                     self.microbatch_size)
 
-                loss_mape = self.loss_op(pred, batch.config_runtime)
+                if self.is_tile:
+                    loss_mape = torch.zeros(size=(1,), dtype=pred.dtype, device=pred.device)
+                else:
+                    loss_mape = self.loss_op(pred, batch.config_runtime)
 
                 # We store #ub_size duplicates of diff_triu_vector
                 # because of the technicalities of batching.
