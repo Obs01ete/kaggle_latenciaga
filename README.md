@@ -22,6 +22,7 @@ pip install torchmetrics
 pip install tensorboard
 pip install six
 pip install wandb
+pip install attrs
 ```
 
 Experimental:
@@ -33,4 +34,5 @@ pip install torchmetrics
 pip install tensorboard
 pip install six
 pip install wandb
+pip install attrs
 ```

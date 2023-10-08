@@ -21,6 +21,7 @@ from src.data import LayoutData
 from src.model import Model
 from src.metrics import tile_topk_metric
 from src.wandb_support import init_wandb, try_upload_artefacts
+from src.stats_keeper import StatsKeeper
 
 
 def concat_premade_microbatches(microbatch_list: Sequence[Batch]):
@@ -185,6 +186,7 @@ class Trainer:
         else:
             self.val_batch_size = val_batch_size
         self.test_batch_size = self.val_batch_size
+        self.stats = StatsKeeper()
 
         self.loss_op = MeanAbsolutePercentageError().to(self.device)
     
@@ -318,6 +320,7 @@ class Trainer:
                     loss_val = loss.item()
                     loss_mape_val = loss_mape.item()
                     loss_diff_mat_sc_val = loss_diff_mat_sc.item()
+                    nz_diff_loss_frac = nz_diff_loss_frac.item()
                     print(f"Train loss = {loss_val:.5f}, "
                         f"loss_mape = {loss_mape_val:.5f}, "
                         f"loss_diff_mat_sc = {loss_diff_mat_sc_val:.5f}, "
@@ -337,11 +340,19 @@ class Trainer:
                             t_test=True, alternative='two-sided')
                         kendall_list.append(kendall)
                         p_value_list.append(p_value)
-                    kendall_total = torch.nanmean(torch.stack(kendall_list))
-                    p_value_total = torch.nanmean(torch.stack(p_value_list))
-                    print("kendall=", kendall_total.item(), "p_value=", p_value_total.item())
-                    self.logger.add_scalar("train/kendall", kendall_total.item(), self.iteration)
-                    self.logger.add_scalar("train/p_value", p_value_total.item(), self.iteration)
+                    kendall_total = torch.nanmean(torch.stack(kendall_list)).item()
+                    p_value_total = torch.nanmean(torch.stack(p_value_list)).item()
+                    self.stats.update_train(
+                        iteration=self.iteration,
+                        train_kendall=kendall_total,
+                        train_loss=loss_val,
+                        train_mape=loss_mape_val,
+                        train_loss_diff_mat_sc=loss_diff_mat_sc_val,
+                        train_nz_diff_loss_frac=nz_diff_loss_frac,
+                    )
+                    print("kendall=", kendall_total, "p_value=", p_value_total)
+                    self.logger.add_scalar("train/kendall", kendall_total, self.iteration)
+                    self.logger.add_scalar("train/p_value", p_value_total, self.iteration)
                     self.logger.add_scalar("train/epoch", epoch, self.iteration)
 
                 optimizer.zero_grad()
@@ -358,6 +369,7 @@ class Trainer:
 
                 if self.iteration % self.iters_per_val == self.iters_per_val - 1:
                     self.validate()
+                    self._save_ckpt()
                     validation_ts = time.time()
                     validation_dur = validation_ts - forward_backward_ts
                     print(f"{validation_dur=}")
@@ -370,14 +382,10 @@ class Trainer:
                     exit_training = True
                     break
             
-            torch.save(self.model.state_dict(),
-                       os.path.join(self.artefact_dir, "latest.pth"))
-
-            try_upload_artefacts(self.artefact_dir)
-            
             epoch += (self.oversample_factor
                       if self.oversample_factor is not None else 1)
-        
+
+        self._save_ckpt()
         self.test("end_of_train_submission.csv")
     
     def validate(self):
@@ -400,7 +408,13 @@ class Trainer:
         loss_list, prediction_dict = self._make_predictions(split)
         
         if split == 'valid':
-            self._compute_metrics(split, loss_list, prediction_dict)
+            val_kendall, val_loss = self._compute_metrics(
+                split, loss_list, prediction_dict)
+            self.stats.update_val(
+                iteration=self.iteration,
+                val_kendall=val_kendall,
+                val_loss=val_loss,
+            )
 
         if submission_csv_path is not None:
             self._prepare_submission(prediction_dict, submission_csv_path)
@@ -423,7 +437,21 @@ class Trainer:
                                                submission_csv_path)
         self.save_submission(submission_dict, submission_csv_path)
         print(f"Saved to {submission_csv_path}")
-    
+
+    def _save_ckpt(self, ckpt_name="latest.pth", best_ckpt_name="best.pth"):
+        torch.save(self.model.state_dict(),
+                   os.path.join(self.artefact_dir, ckpt_name))
+        self.stats.save_as_json(os.path.join(self.artefact_dir,
+                                             f"{ckpt_name.split('.')[0]}.json"))
+
+        if self.stats.best_val_kendall == self.stats.val_kendall:
+            torch.save(self.model.state_dict(),
+                       os.path.join(self.artefact_dir, best_ckpt_name))
+            self.stats.save_as_json(os.path.join(self.artefact_dir,
+                                                 f"{best_ckpt_name.split('.')[0]}.json"))
+
+        try_upload_artefacts(self.artefact_dir)
+
     def _make_predictions(self, split: str):
         worker_threads = (self.worker_threads if self.is_tile
                           else self.worker_threads // 4)
@@ -510,17 +538,18 @@ class Trainer:
                 tile_metric = tile_topk_metric(torch.tensor(pred_all), torch.tensor(target_all))
                 tile_topk_list.append(tile_metric.item())
 
-        kendall_grand = np.mean(kendall_grand_list)
-        p_value_grand = np.mean(p_value_grand_list)
-        print(f"{split} kendall=", kendall_grand.item(), "p_value=", p_value_grand.item())
+        kendall_grand = np.mean(kendall_grand_list).item()
+        p_value_grand = np.mean(p_value_grand_list).item()
+        print(f"{split} kendall=", kendall_grand, "p_value=", p_value_grand)
         if self.is_tile:
             tile_topk_grand = np.mean(tile_topk_list).item()
             print(f"{split} tile_top_k=", tile_topk_grand)
             self.logger.add_scalar("val/tile_top_k", tile_topk_grand, self.iteration)
         if self.logger is not None:
             self.logger.add_scalar("val/loss", loss_grand, self.iteration)
-            self.logger.add_scalar("val/kendall", kendall_grand.item(), self.iteration)
-            self.logger.add_scalar("val/p_value", p_value_grand.item(), self.iteration)
+            self.logger.add_scalar("val/kendall", kendall_grand, self.iteration)
+            self.logger.add_scalar("val/p_value", p_value_grand, self.iteration)
+        return kendall_grand, loss_grand
 
     def save_submission(self,
                         submission_dict: Dict[str, np.ndarray],
