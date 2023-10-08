@@ -177,8 +177,14 @@ class LayoutData(Dataset):
             chosen_config_runtime = single_data.config_runtime[chosen]
             chosen_config_runtime_sec = RUNTIME_SCALE_TO_SEC * chosen_config_runtime
 
-            diff_matrix_sec = make_diff_matrix(chosen_config_runtime_sec).unsqueeze(0)
-            diff_triu_vector_sec = triu_vector(diff_matrix_sec.squeeze(0)).unsqueeze(0)
+            if self.is_tile:
+                normalized_runtime = (single_data.config_runtime[chosen] /
+                                      single_data.config_runtime_normalizers[chosen])
+                diff_matrix = make_diff_matrix(normalized_runtime).unsqueeze(0)
+                diff_triu_vector = triu_vector(diff_matrix.squeeze(0)).unsqueeze(0)
+            else:
+                diff_matrix = make_diff_matrix(chosen_config_runtime_sec).unsqueeze(0)
+                diff_triu_vector = triu_vector(diff_matrix.squeeze(0)).unsqueeze(0)
 
             data_list = []
             for imb in range(self.microbatch_size):
@@ -195,7 +201,7 @@ class LayoutData(Dataset):
                     data.config_runtime = chosen_config_runtime_sec[imb]
                 # We have to put the diff_matrix in every sample
                 # of the microbatch for batching to work correctly.
-                data.diff_triu_vector = diff_triu_vector_sec
+                data.diff_triu_vector = diff_triu_vector
                 data.fname = single_data.fname
                 if self.convert_to_undirected:
                     data.edge_labels = single_data.edge_labels
@@ -218,8 +224,8 @@ class LayoutData(Dataset):
 
             if self.is_tile:
                 data.config_feat = single_data.config_feat[config_idx]
-                data.config_runtime = single_data.config_runtime[config_idx] / single_data.config_runtime_normalizers[
-                    config_idx]
+                data.config_runtime = (single_data.config_runtime[config_idx] /
+                                       single_data.config_runtime_normalizers[config_idx])
             else:
                 data.node_config_feat = single_data.node_config_feat[config_idx]
                 data.node_config_ids = single_data.node_config_ids

@@ -244,8 +244,7 @@ class Trainer:
         elif "-nlp-" in self.collection:
             ranking_margin = 1.5e-4 # sec
         else:
-            # Need to find good margin for tile
-            ranking_margin = 7.5e-5 # sec
+            ranking_margin = 1e-1 # fractional units (not seconds)
 
         exit_training = False
         while True:
@@ -295,7 +294,7 @@ class Trainer:
                     batch.diff_triu_vector[::self.microbatch_size]
 
                 # loss_diff_mat is 1.0 tops
-                loss_diff_mat = (1/ranking_margin) * F.margin_ranking_loss(
+                loss_diff_mat = F.margin_ranking_loss(
                     pred_diff_mat,
                     torch.zeros_like(pred_diff_mat),
                     torch.sign(diff_triu_vector_per_ub),

@@ -144,7 +144,10 @@ class Model(nn.Module):
         # branch for MAPE
         per_graph_latenies_ms = self.aggr_sum(per_node_latencies_unsq, batch)
         per_graph_latenies_ms_sq = per_graph_latenies_ms.squeeze(-1)
-        per_graph_latenies_sec = SCALE_MS_TO_SEC * per_graph_latenies_ms_sq
+        if is_tile:
+            per_graph_latenies = per_graph_latenies_ms_sq
+        else:
+            per_graph_latenies = SCALE_MS_TO_SEC * per_graph_latenies_ms_sq
 
         # branch for diff matrix
         assert batch_size % ub_size == 0
@@ -154,7 +157,7 @@ class Model(nn.Module):
             ub_slice = slice(iub*ub_size,
                              (iub+1)*ub_size)
             # per_ub_latencies [ub_size]
-            per_ub_latencies = per_graph_latenies_sec[ub_slice]
+            per_ub_latencies = per_graph_latenies[ub_slice]
             # diff_matrix [ub_size, ub_size]
             diff_matrix = make_diff_matrix(per_ub_latencies)
             # triu_len = ub_size*(ub_size-1)/2. Ex triu_len=6 for ub_size=4.
@@ -165,4 +168,4 @@ class Model(nn.Module):
         # diff_triu_vector_stack [num_microbatches, triu_len]
         diff_triu_vector_stack = torch.stack(diff_triu_vector_list)
 
-        return per_graph_latenies_sec, diff_triu_vector_stack
+        return per_graph_latenies, diff_triu_vector_stack
