@@ -293,8 +293,12 @@ class Trainer:
                 diff_triu_vector_per_ub = \
                     batch.diff_triu_vector[::self.microbatch_size]
 
-                # loss_diff_mat is 1.0 tops
-                loss_diff_mat = F.margin_ranking_loss(
+                if self.is_tile:
+                    scale = 1.0
+                else:
+                    scale = 1.0 / ranking_margin
+
+                loss_diff_mat = scale * F.margin_ranking_loss(
                     pred_diff_mat,
                     torch.zeros_like(pred_diff_mat),
                     torch.sign(diff_triu_vector_per_ub),
