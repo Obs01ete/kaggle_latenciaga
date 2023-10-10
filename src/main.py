@@ -22,6 +22,7 @@ from src.model import Model
 from src.metrics import tile_topk_metric
 from src.wandb_support import init_wandb, try_upload_artefacts
 from src.stats_keeper import StatsKeeper
+from src.sys_utils import worker_init_fn
 
 
 def concat_premade_microbatches(microbatch_list: Sequence[Batch]):
@@ -31,12 +32,6 @@ def concat_premade_microbatches(microbatch_list: Sequence[Batch]):
             grand_list.append(sample)
     batch = Batch.from_data_list(grand_list, follow_batch=LayoutData.FOLLOW_BATCH_KEYS)
     return batch
-
-
-def worker_init_fn(worker_id: int) -> None:
-    cpu_count = os.cpu_count()
-    if cpu_count is not None:
-        os.sched_setaffinity(0, range(cpu_count))
 
 
 # from transformers/src/transformers/trainer_pt_utils.py
@@ -103,13 +98,13 @@ class Trainer:
         self.is_tile = "tile-" in self.collection
 
         DEFAULT_DATA_PATH = "/home/khizbud/latenciaga/data/npz_all/npz"
-        DEFAULT_MAX_ITERATIONS = 400_000 if self.is_tile else 100_000
+        DEFAULT_MAX_ITERATIONS = 400_000 if self.is_tile else 200_000
         DEFAULT_BATCH_SIZE = 100 if self.is_tile else 10
         DEFAULT_MICROBATCH_SIZE = 10 if self.is_tile else 4
         DEFAULT_VAL_BATCH_SIZE = 400 if self.is_tile else 40
         DEFAULT_OVERSAMPLE_FACTOR = 100
         DEFAULT_WEIGHT_DECAY = 0.0
-        DEFAULT_ITERS_PER_VAL = 10_000 if self.is_tile else 400
+        DEFAULT_ITERS_PER_VAL = 10_000 if self.is_tile else 2_000
 
         if source_data_path is None:
             self.source_data_path = DEFAULT_DATA_PATH

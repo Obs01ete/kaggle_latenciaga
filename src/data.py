@@ -3,7 +3,9 @@ import numpy as np
 from pathlib import Path
 from typing import Optional, Dict, Tuple, Union, Any
 from functools import lru_cache
-import random
+from tqdm import tqdm
+from numpy.lib.npyio import NpzFile
+import multiprocessing
 
 import torch
 from torch_geometric.data import Data, Batch
@@ -11,6 +13,7 @@ from torch_geometric.data.dataset import Dataset
 from torch_geometric.utils import to_undirected
 
 from src.utils import make_diff_matrix, triu_vector
+from src.sys_utils import process_init_fn
 
 
 def random_sample(d: Dict[Any, Any], num) -> Dict[Any, Any]:
@@ -18,6 +21,18 @@ def random_sample(d: Dict[Any, Any], num) -> Dict[Any, Any]:
     indices.sort()
     do = {i: d[idx] for i, idx in enumerate(indices)}
     return do
+
+
+def repack_one_npz(src_file: str, dst_file: str):
+    npz = np.load(src_file)
+    data = dict(npz)
+    new_data = {k: v for k, v in data.items() if k != 'node_config_feat'}
+    node_config_feat = data['node_config_feat']
+    new_data['num_configs'] = np.array([node_config_feat.shape[0]], dtype=int)
+    for i in range(node_config_feat.shape[0]):
+        node_config_feat_ith = np.ascontiguousarray(node_config_feat[i])
+        new_data[f"node_config_feat_{i}"] = node_config_feat_ith
+    np.savez_compressed(dst_file, **new_data, allow_pickle=False)
 
 
 class LayoutData(Dataset):
@@ -49,7 +64,10 @@ class LayoutData(Dataset):
             split: str,
             microbatch_size: Optional[int] = None,
             oversample_factor: Optional[int] = None,
-            convert_to_undirected: bool = False
+            convert_to_undirected: bool = False,
+            repack_npz: bool = True,
+            cache_root: Path = Path("data_cache"),
+            num_repack_processes: int = 8,
             ):
 
         super().__init__()
@@ -63,11 +81,12 @@ class LayoutData(Dataset):
             assert microbatch_size is None
             assert oversample_factor is None
 
-        self.data_root = data_root
         assert coll in self.COLL
         self.coll = coll
         assert split in self.SPLIT
         self.split = split
+
+        self.num_repack_processes = num_repack_processes
 
         self.is_tile = "tile-" in coll
 
@@ -77,7 +96,23 @@ class LayoutData(Dataset):
 
         self.convert_to_undirected = convert_to_undirected
 
-        self.data_dir = self._get_coll_root(coll)
+        orig_data_dir = data_root / self._get_coll_subpath(coll)
+        assert os.path.exists(orig_data_dir)
+
+        self.data_dir: Path
+        if self.is_tile:
+            self.data_dir = orig_data_dir
+        else: # layout
+            if repack_npz:
+                print("Going with repacked npz's")
+                self.data_dir = cache_root / self._get_coll_subpath(coll)
+                if not os.path.exists(self.data_dir):
+                    os.makedirs(self.data_dir, exist_ok=True)
+                    self._repack_data(orig_data_dir, self.data_dir)
+            else:
+                print("Going with original (non-repacked) npz's")
+                self.data_dir = orig_data_dir
+
         file_name_list = []
         for file in os.listdir(self.data_dir):
             if not file.endswith(".npz"):
@@ -100,8 +135,8 @@ class LayoutData(Dataset):
             idx = 0
             self.map_idx_to_name_and_config = dict()
             for file_path in self.file_name_list:
-                npz_dict = dict(np.load(file_path))
-                num_configs = npz_dict["config_runtime"].shape[0]
+                npz = np.load(file_path)
+                num_configs = npz["config_runtime"].shape[0]
                 for config_idx in range(num_configs):
                     self.map_idx_to_name_and_config[idx] = dict(
                         file_path=file_path,
@@ -120,14 +155,33 @@ class LayoutData(Dataset):
             self._len = len(self.map_idx_to_name_and_config)
         pass
 
+    def _repack_data(self, orig_data_dir, cache_dir):
+        src_dst_list = []
+        for file in tqdm(os.listdir(orig_data_dir)):
+            if not file.endswith(".npz"):
+                continue
+            src_file = str(orig_data_dir/file)
+            dst_file = str(cache_dir/file)
+            src_dst_list.append((src_file, dst_file))
+
+        print("Repacking npz's...")
+        enable_multiprocessing = True
+        if enable_multiprocessing:
+            with multiprocessing.Pool(self.num_repack_processes, initializer=process_init_fn) as pool:
+                pool.starmap(repack_one_npz, src_dst_list)
+        else:
+            for src_file, dst_file in src_dst_list:
+                repack_one_npz(src_file, dst_file)
+        print("Done repacking npz's.")
+
     def len(self) -> int:
         return self._len
 
     @lru_cache(maxsize=1)
-    def _get_single(self, file_path: str) -> Data:
-        npz_dict = dict(np.load(file_path))
+    def _get_single(self, file_path: str) -> Tuple[Data, NpzFile]:
+        npz = np.load(file_path)
 
-        edge_index = torch.tensor(npz_dict["edge_index"].T).long()
+        edge_index = torch.tensor(npz["edge_index"].T).long()
 
         if self.convert_to_undirected:
             edge_index, edge_labels = self._convert_graph_to_undirected(edge_index)
@@ -135,15 +189,20 @@ class LayoutData(Dataset):
         else:
             data = Data(edge_index=edge_index)
 
-        for name, array in npz_dict.items():
+        for name in npz.keys():
             if name == "edge_index":
                 continue
+            if name == 'num_configs':
+                continue
+            if "node_config_feat_" in name:
+                continue
+            array = npz[name]
             tensor = torch.tensor(array) # inherit type
             setattr(data, name, tensor)
 
         fname_wo_ext = os.path.splitext(os.path.basename(file_path))[0]
         data.fname = fname_wo_ext
-        return data
+        return data, npz
     
     def get(self, idx: int) -> Batch: # not Data
 
@@ -155,16 +214,20 @@ class LayoutData(Dataset):
             microbatch_size = self.microbatch_size
 
             file_path = self.file_name_list[idx]
-            single_data = self._get_single(file_path)
+            single_data, npz = self._get_single(file_path)
 
             # 'Data(node_feat=[372, 140], node_opcode=[372], edge_index=[2, 597], 
             # node_config_feat=[47712, 26, 18], node_config_ids=[26],
             # config_runtime=[47712], node_splits=[1, 3])'
 
+            num_configs: int
             if self.is_tile:
                 num_configs = single_data.config_feat.shape[0]
             else:
-                num_configs = single_data.node_config_feat.shape[0]
+                if 'node_config_feat' in single_data.keys:
+                    num_configs = single_data.node_config_feat.shape[0]
+                else:
+                    num_configs = npz['num_configs'].item()
 
             # enabled replace=True for all, so that tile does not crash
             chosen = np.random.choice(np.arange(num_configs),
@@ -173,7 +236,12 @@ class LayoutData(Dataset):
             if self.is_tile:
                 chosen_config_feat = single_data.config_feat[chosen]
             else:
-                chosen_config_feat = single_data.node_config_feat[chosen]
+                if 'node_config_feat' in single_data.keys:
+                    chosen_config_feat = single_data.node_config_feat[chosen]
+                else:
+                    chosen_config_feat_np = np.stack([npz[f"node_config_feat_{idx}"]
+                                                      for idx in chosen])
+                    chosen_config_feat = torch.tensor(chosen_config_feat_np)
             chosen_config_runtime = single_data.config_runtime[chosen]
             chosen_config_runtime_sec = RUNTIME_SCALE_TO_SEC * chosen_config_runtime
 
@@ -215,7 +283,7 @@ class LayoutData(Dataset):
             file_path = name_and_config['file_path']
             # print(self._get_single.cache_info())
             # print("getting", file_path)
-            single_data = self._get_single(file_path)
+            single_data, npz = self._get_single(file_path)
             config_idx = name_and_config['config_idx']
 
             data = Data(edge_index=single_data.edge_index)
@@ -227,7 +295,11 @@ class LayoutData(Dataset):
                 data.config_runtime = (single_data.config_runtime[config_idx] /
                                        single_data.config_runtime_normalizers[config_idx])
             else:
-                data.node_config_feat = single_data.node_config_feat[config_idx]
+                if 'node_config_feat' in single_data.keys:
+                    data.node_config_feat = single_data.node_config_feat[config_idx]
+                else:
+                    node_config_feat_np = npz[f"node_config_feat_{config_idx}"]
+                    data.node_config_feat = torch.tensor(node_config_feat_np)
                 data.node_config_ids = single_data.node_config_ids
                 data.config_runtime = RUNTIME_SCALE_TO_SEC * single_data.config_runtime[config_idx]
             data.fname = single_data.fname
@@ -240,7 +312,7 @@ class LayoutData(Dataset):
         # it is passed through out of __getitem__.
         return microbatch # type: ignore
 
-    def _get_coll_root(self, coll: str) -> Path:
+    def _get_coll_subpath(self, coll: str) -> Path:
         """Parse the collection and return the corresponding data root.
         
         Parameters:
@@ -253,15 +325,15 @@ class LayoutData(Dataset):
         if len(coll_terms) == 3:
             optim, src, search = coll_terms
             assert search in self.SEARCH
-            data_root = self.data_root/f"{optim}/{src}/{search}/{self.split}"
+            subpath = Path(f"{optim}/{src}/{search}/{self.split}")
         else:
             optim, src = coll_terms
-            data_root = self.data_root/f"{optim}/{src}/{self.split}"
+            subpath = Path(f"{optim}/{src}/{self.split}")
         
         assert optim in self.OPTIM
         assert src in self.SRC
 
-        return data_root
+        return subpath
 
     @staticmethod
     def _convert_graph_to_undirected(directed: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:

@@ -1,5 +1,6 @@
 from pathlib import Path
 from tqdm import tqdm
+import time
 
 from torch.utils.data import DataLoader
 
@@ -19,7 +20,8 @@ def test_dataloader():
         coll=collection,
         split="train",
         microbatch_size=microbatch_size,
-        oversample_factor=2)
+        oversample_factor=2,
+        repack_npz=True)
 
     batch_size = 5
 
@@ -36,7 +38,10 @@ def test_dataloader():
     for i in range(10):
         print(f"------- {i} ---------")
 
+        prev_ts = time.time()
         for i_batch, batch in enumerate(train_loader):
+            print("Duration", time.time() - prev_ts)
+            prev_ts = time.time()
             print(batch)
             # if i_batch >= 2:
             #     break
@@ -77,5 +82,5 @@ def test_dataloader_val():
 
 
 if __name__ == "__main__":
-    # test_dataloader()
+    test_dataloader()
     test_dataloader_val()
