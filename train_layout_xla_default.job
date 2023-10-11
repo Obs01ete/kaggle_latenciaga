@@ -1,0 +1,21 @@
+#!/bin/bash --login
+#SBATCH -N 1
+#SBATCH --partition=batch
+#SBATCH -J latenciaga
+#SBATCH -o /ibex/ai/home/khizbud/latenciaga/slurm_logs/output.%J.out
+#SBATCH -e /ibex/ai/home/khizbud/latenciaga/slurm_logs/output.%J.err
+#SBATCH --mail-user=dmitrii.khizbullin@kaust.edu.sa
+#SBATCH --mail-type=END,FAIL
+#SBATCH --time=24:00:00
+#SBATCH --mem=200G
+#SBATCH --ntasks=1
+#SBATCH --gres=gpu:a100:1
+#SBATCH --cpus-per-task=16
+#SBATCH --reservation=A100
+
+module purge
+conda activate latenciaga4
+
+. ./tag.sh
+
+PYTHONPATH=. python src/main.py --collection=layout-xla-default --tag=${SLURM_JOB_ID}_${TAG} --max-iterations=100000
