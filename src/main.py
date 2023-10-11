@@ -7,12 +7,14 @@ from collections import defaultdict
 from argparse import ArgumentParser
 import time
 import datetime
+import math
 
 import torch
 from torch.utils.tensorboard.writer import SummaryWriter
 from torch_geometric.data import Data, Batch
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
+from torch.optim.lr_scheduler import MultiStepLR
 
 from torchmetrics.functional.regression import kendall_rank_corrcoef
 from torchmetrics import MeanAbsolutePercentageError
@@ -224,6 +226,13 @@ class Trainer:
         
         optimizer = torch.optim.Adam(optimized_parameters, lr=1e-3)
 
+        # milestones = [v*10_000 for v in (1, 2, 3, 4)] # finalization schedule for layout
+        # milestones = [v*20_000 for v in (1, 2, 3, 4)] # finalization schedule for tile
+        milestones = [int(self.max_iterations*v) for v in (0.6, 0.7, 0.8, 0.9)]
+        lr_scheduler = MultiStepLR(optimizer,
+                                   milestones=milestones,
+                                   gamma=1/math.sqrt(10))
+
         epoch = 0
 
         print(f"{torch.get_num_threads()=}")
@@ -316,6 +325,7 @@ class Trainer:
                     loss_mape_val = loss_mape.item()
                     loss_diff_mat_sc_val = loss_diff_mat_sc.item()
                     nz_diff_loss_frac = nz_diff_loss_frac.item()
+                    learning_rate = lr_scheduler.get_last_lr()[0]
                     print(f"Train loss = {loss_val:.5f}, "
                         f"loss_mape = {loss_mape_val:.5f}, "
                         f"loss_diff_mat_sc = {loss_diff_mat_sc_val:.5f}, "
@@ -325,6 +335,7 @@ class Trainer:
                     self.logger.add_scalar("train/loss_mape", loss_mape, self.iteration)
                     self.logger.add_scalar("train/loss_diff_mat_sc", loss_diff_mat_sc, self.iteration)
                     self.logger.add_scalar("train/nz_diff_loss_frac", nz_diff_loss_frac, self.iteration)
+                    self.logger.add_scalar("train/learning_rate", learning_rate, self.iteration)
 
                     kendall_list = []
                     p_value_list = []
@@ -372,6 +383,7 @@ class Trainer:
 
                 end_iter_ts = time.time()
 
+                lr_scheduler.step()
                 self.iteration += 1
                 if self.iteration >= self.max_iterations:
                     exit_training = True
