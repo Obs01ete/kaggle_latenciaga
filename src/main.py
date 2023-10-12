@@ -15,6 +15,7 @@ from torch_geometric.data import Data, Batch
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import MultiStepLR
+from torch.nn.utils.clip_grad import clip_grad_norm_
 
 from torchmetrics.functional.regression import kendall_rank_corrcoef
 from torchmetrics import MeanAbsolutePercentageError
@@ -318,23 +319,28 @@ class Trainer:
 
                 diff_mat_loss_scale = 1.0
                 loss_diff_mat_sc = diff_mat_loss_scale * loss_diff_mat_red
-                loss = loss_mape + loss_diff_mat_sc
+                mape_loss_scale = 1.0
+                loss_mape_sc = mape_loss_scale * loss_mape
+                loss = loss_mape_sc + loss_diff_mat_sc
 
                 if self.iteration % train_print_interval == 0:
                     loss_val = loss.item()
                     loss_mape_val = loss_mape.item()
+                    loss_mape_sc_val = loss_mape_sc.item()
                     loss_diff_mat_sc_val = loss_diff_mat_sc.item()
-                    nz_diff_loss_frac = nz_diff_loss_frac.item()
+                    nz_diff_loss_frac_val = nz_diff_loss_frac.item()
                     learning_rate = lr_scheduler.get_last_lr()[0]
                     print(f"Train loss = {loss_val:.5f}, "
                         f"loss_mape = {loss_mape_val:.5f}, "
+                        f"loss_mape_sc = {loss_mape_sc_val:.5f}, "
                         f"loss_diff_mat_sc = {loss_diff_mat_sc_val:.5f}, "
-                        f"nz_diff_loss_frac = {nz_diff_loss_frac:.5f}"
+                        f"nz_diff_loss_frac = {nz_diff_loss_frac_val:.5f}"
                         )
                     self.logger.add_scalar("train/loss", loss_val, self.iteration)
-                    self.logger.add_scalar("train/loss_mape", loss_mape, self.iteration)
-                    self.logger.add_scalar("train/loss_diff_mat_sc", loss_diff_mat_sc, self.iteration)
-                    self.logger.add_scalar("train/nz_diff_loss_frac", nz_diff_loss_frac, self.iteration)
+                    self.logger.add_scalar("train/loss_mape", loss_mape_val, self.iteration)
+                    self.logger.add_scalar("train/loss_mape_sc", loss_mape_sc_val, self.iteration)
+                    self.logger.add_scalar("train/loss_diff_mat_sc", loss_diff_mat_sc_val, self.iteration)
+                    self.logger.add_scalar("train/nz_diff_loss_frac", nz_diff_loss_frac_val, self.iteration)
                     self.logger.add_scalar("train/learning_rate", learning_rate, self.iteration)
 
                     kendall_list = []
@@ -354,15 +360,29 @@ class Trainer:
                         train_loss=loss_val,
                         train_mape=loss_mape_val,
                         train_loss_diff_mat_sc=loss_diff_mat_sc_val,
-                        train_nz_diff_loss_frac=nz_diff_loss_frac,
+                        train_nz_diff_loss_frac=nz_diff_loss_frac_val,
                     )
                     print("kendall=", kendall_total, "p_value=", p_value_total)
                     self.logger.add_scalar("train/kendall", kendall_total, self.iteration)
                     self.logger.add_scalar("train/p_value", p_value_total, self.iteration)
                     self.logger.add_scalar("train/epoch", epoch, self.iteration)
 
+                if self.iteration % train_print_interval == 0:
+                    grad_clip_val = 1000.0
+
+                    for specific_loss, specific_name in (
+                        (loss_mape_sc, "mape_sc_grad_norm"),
+                        (loss_diff_mat_sc, "diff_mat_sc_grad_norm"),
+                        (loss, "loss_grad_norm"),
+                    ):
+                        optimizer.zero_grad()
+                        if specific_loss.requires_grad:
+                            specific_loss.backward(retain_graph=True)
+                        grad_norm = clip_grad_norm_(self.model.parameters(), grad_clip_val).item()
+                        self.logger.add_scalar(f"train/{specific_name}", grad_norm, self.iteration)
+
                 optimizer.zero_grad()
-                loss.backward()
+                loss.backward(retain_graph=True)
                 optimizer.step()
 
                 forward_backward_ts = time.time()
@@ -446,6 +466,7 @@ class Trainer:
         print(f"Saved to {submission_csv_path}")
 
     def _save_ckpt(self, ckpt_name="latest.pth", best_ckpt_name="best.pth"):
+        assert self.artefact_dir is not None
         torch.save(self.model.state_dict(),
                    os.path.join(self.artefact_dir, ckpt_name))
         self.stats.save_as_json(os.path.join(self.artefact_dir,
@@ -548,6 +569,7 @@ class Trainer:
         kendall_grand = np.mean(kendall_grand_list).item()
         p_value_grand = np.mean(p_value_grand_list).item()
         print(f"{split} kendall=", kendall_grand, "p_value=", p_value_grand)
+        assert self.logger is not None
         if self.is_tile:
             tile_topk_grand = np.mean(tile_topk_list).item()
             print(f"{split} tile_top_k=", tile_topk_grand)
