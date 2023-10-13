@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Sequence, Dict, Optional, List
+from typing import Sequence, Dict, Optional, List, Any
 import numpy as np
 from tqdm import tqdm
 from collections import defaultdict
@@ -11,7 +11,7 @@ import math
 
 import torch
 from torch.utils.tensorboard.writer import SummaryWriter
-from torch_geometric.data import Data, Batch
+from torch_geometric.data import Batch
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import MultiStepLR
@@ -57,7 +57,7 @@ def get_parameter_names(model, forbidden_layer_types):
 def get_model_parameters(model: torch.nn.Module,
                          weight_decay: float = 0,
                          exclude_patterns: Optional[List[str]] = None
-                         ) -> List[Dict[str, List[torch.Tensor]]]:
+                         ) -> List[Dict[str, Any]]:
     decay_parameters = get_parameter_names(model, [torch.nn.LayerNorm])
     decay_parameters = [name for name in decay_parameters if ".bias" not in name]
     if exclude_patterns is not None:
@@ -87,7 +87,7 @@ class Trainer:
                  weight_decay: Optional[float] = None,
                  collection: Optional[str] = None,
                  tag: Optional[str] = None,
-                 debug: bool = False):
+                 debug: bool = False) -> None:
 
         self.tag = tag
         self.debug = debug
@@ -164,8 +164,8 @@ class Trainer:
             worker_threads = default_worker_threads
         self.worker_threads = 0 if self.debug else worker_threads
 
-        self.artefact_dir = None
-        self.logger = None
+        self.artefact_dir: Optional[str] = None
+        self.logger: Optional[SummaryWriter] = None
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         print("device=", self.device)
@@ -192,7 +192,7 @@ class Trainer:
     def full_batch_size(self):
         return self.batch_size * self.microbatch_size
 
-    def train(self):
+    def train(self) -> None:
 
         print("Start training")
 
@@ -209,7 +209,7 @@ class Trainer:
 
         # self.validate() # for quick debug
 
-        train_loader = DataLoader(
+        train_loader: DataLoader[Batch] = DataLoader(
             self.train_data,
             batch_size=self.batch_size,
             shuffle=True,
@@ -483,7 +483,7 @@ class Trainer:
     def _make_predictions(self, split: str):
         worker_threads = (self.worker_threads if self.is_tile
                           else self.worker_threads // 4)
-        loader = DataLoader(
+        loader: DataLoader[Batch] = DataLoader(
             self.val_data if split == 'valid' else self.test_data,
             batch_size=self.val_batch_size,
             shuffle=False,
@@ -595,7 +595,7 @@ class Trainer:
                                               map_location=self.device))
     
     def test_val_submission_csv(self, submission_csv_path: str):
-        loader = DataLoader(
+        loader: DataLoader[Batch] = DataLoader(
             self.val_data,
             batch_size=self.val_batch_size,
             shuffle=False,
