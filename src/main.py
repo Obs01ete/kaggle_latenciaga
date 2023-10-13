@@ -86,6 +86,7 @@ class Trainer:
                  oversample_factor: Optional[int] = None,
                  weight_decay: Optional[float] = None,
                  collection: Optional[str] = None,
+                 delete_duplicates: Optional[bool] = False,
                  tag: Optional[str] = None,
                  debug: bool = False) -> None:
 
@@ -132,22 +133,32 @@ class Trainer:
             self.weight_decay = DEFAULT_WEIGHT_DECAY
 
         self.iters_per_val = DEFAULT_ITERS_PER_VAL
+        cache_root = Path("data_cache_clean") if delete_duplicates else Path("data_cache")
 
         self.train_data = LayoutData(
             data_root,
             coll=self.collection,
             split="train",
             microbatch_size=self.microbatch_size,
-            oversample_factor=self.oversample_factor)
+            oversample_factor=self.oversample_factor,
+            cache_root=cache_root,
+            delete_duplicates=delete_duplicates,
+        )
 
         self.val_data = LayoutData(
             data_root,
             coll=self.collection,
-            split="valid")
+            split="valid",
+            cache_root=cache_root,
+            delete_duplicates=delete_duplicates,
+        )
 
+        # don't delete duplicates for test but use the same folder as train and val
         self.test_data = LayoutData(
             data_root,
             coll=self.collection,
+            cache_root=cache_root,
+            delete_duplicates=False,
             split="test")
 
         if max_iterations is None:
@@ -643,6 +654,8 @@ def main():
                         help='Provide submission_val.csv, get score')
     parser.add_argument('--collection', action='store', type=str,
                         help='One of 4 collections. Default layout-xla-random if not set')
+    parser.add_argument('--delete-duplicates', action='store_true',
+                        help='Delete duplicates from source data')
     parser.add_argument('--tag', action='store', type=str,
                         help='Extra suffix to put on the artefact dir name')
     parser.add_argument('--debug', action='store_true')
@@ -657,6 +670,7 @@ def main():
                       oversample_factor=args.oversample_factor,
                       weight_decay=args.weight_decay,
                       collection=args.collection,
+                      delete_duplicates=args.delete_duplicates,
                       tag=args.tag,
                       debug=args.debug)
     if args.test_snapshot is not None:

@@ -1,11 +1,14 @@
+import copy
 import os
 import numpy as np
+import pandas as pd
 from pathlib import Path
 from typing import Optional, Dict, Tuple, Union, Any
 from functools import lru_cache
 from tqdm import tqdm
 from numpy.lib.npyio import NpzFile
 import multiprocessing
+from functools import partial
 
 import torch
 from torch_geometric.data import Data, Batch
@@ -23,16 +26,55 @@ def random_sample(d: Dict[Any, Any], num) -> Dict[Any, Any]:
     return do
 
 
-def repack_one_npz(src_file: str, dst_file: str):
+def delete_dupl(npz_dict: dict, is_tile: bool) -> dict:
+    npz_dict_copy = {}
+    for k in npz_dict:
+        npz_dict_copy[k] = npz_dict[k]
+    if is_tile:
+        src_shape = list(npz_dict_copy["config_feat"].shape)
+        src_df = pd.DataFrame(npz_dict_copy["config_feat"])
+        src_df["config_runtime"] = npz_dict_copy["config_runtime"]
+        src_df["config_runtime_normalizers"] = npz_dict_copy["config_runtime_normalizers"]
+    else:
+        src_shape = list(npz_dict_copy["node_config_feat"].shape)
+        reshaped_feats = npz_dict_copy["node_config_feat"].reshape(src_shape[0], src_shape[1] * src_shape[2])
+        src_df = pd.DataFrame(reshaped_feats)
+        src_df["config_runtime"] = npz_dict_copy["config_runtime"]
+        src_df["config_runtime_normalizers"] = 1
+
+    columns_for_filter = src_df.columns[:-2]
+    src_df["ratio"] = src_df["config_runtime"] / src_df["config_runtime_normalizers"]
+    src_df.sort_values(by=["ratio", "config_runtime"], inplace=True)
+    src_df.drop_duplicates(subset=columns_for_filter, keep="first", inplace=True)
+    src_shape[0] = src_df.shape[0]
+
+    npz_dict_copy["config_runtime"] = src_df["config_runtime"].values
+    if is_tile:
+        npz_dict_copy["config_feat"] = src_df[columns_for_filter].values.reshape(src_shape)
+        npz_dict_copy["config_runtime_normalizers"] = src_df["config_runtime_normalizers"].values
+    else:
+        npz_dict_copy["node_config_feat"] = src_df[columns_for_filter].values.reshape(src_shape)
+    return npz_dict_copy
+
+
+def repack_one_npz(src_file: str, dst_file: str, is_tile: bool = False, delete_duplicates: bool = False):
     npz = np.load(src_file)
     data = dict(npz)
-    new_data = {k: v for k, v in data.items() if k != 'node_config_feat'}
-    node_config_feat = data['node_config_feat']
-    new_data['num_configs'] = np.array([node_config_feat.shape[0]], dtype=int)
-    for i in range(node_config_feat.shape[0]):
-        node_config_feat_ith = np.ascontiguousarray(node_config_feat[i])
-        new_data[f"node_config_feat_{i}"] = node_config_feat_ith
-    np.savez_compressed(dst_file, **new_data, allow_pickle=False)
+    if delete_duplicates:
+        data = delete_dupl(npz_dict=data, is_tile=is_tile)
+        if data["config_runtime"].shape[0] == 1:
+            # all configs are duplicates
+            return
+    if is_tile:
+        np.savez(dst_file, **data)
+    else:
+        new_data = {k: v for k, v in data.items() if k != 'node_config_feat'}
+        node_config_feat = data['node_config_feat']
+        new_data['num_configs'] = np.array([node_config_feat.shape[0]], dtype=int)
+        for i in range(node_config_feat.shape[0]):
+            node_config_feat_ith = np.ascontiguousarray(node_config_feat[i])
+            new_data[f"node_config_feat_{i}"] = node_config_feat_ith
+        np.savez_compressed(dst_file, **new_data, allow_pickle=False)
 
 
 class LayoutData(Dataset):
@@ -68,6 +110,7 @@ class LayoutData(Dataset):
             repack_npz: bool = True,
             cache_root: Path = Path("data_cache"),
             num_repack_processes: int = 8,
+            delete_duplicates: bool = False,
             ):
 
         super().__init__()
@@ -89,6 +132,9 @@ class LayoutData(Dataset):
         self.num_repack_processes = num_repack_processes
 
         self.is_tile = "tile-" in coll
+        self._repack_one_npz_partial = partial(repack_one_npz,
+                                               is_tile=self.is_tile,
+                                               delete_duplicates=delete_duplicates)
 
         MAX_VAL_SAMPLES = 2_000_000 if self.is_tile else 80_000
 
@@ -100,18 +146,15 @@ class LayoutData(Dataset):
         assert os.path.exists(orig_data_dir)
 
         self.data_dir: Path
-        if self.is_tile:
+        if repack_npz:
+            print("Going with repacked npz's")
+            self.data_dir = cache_root / self._get_coll_subpath(coll)
+            if not os.path.exists(self.data_dir):
+                os.makedirs(self.data_dir, exist_ok=True)
+                self._repack_data(orig_data_dir, self.data_dir)
+        else:
+            print("Going with original (non-repacked) npz's")
             self.data_dir = orig_data_dir
-        else: # layout
-            if repack_npz:
-                print("Going with repacked npz's")
-                self.data_dir = cache_root / self._get_coll_subpath(coll)
-                if not os.path.exists(self.data_dir):
-                    os.makedirs(self.data_dir, exist_ok=True)
-                    self._repack_data(orig_data_dir, self.data_dir)
-            else:
-                print("Going with original (non-repacked) npz's")
-                self.data_dir = orig_data_dir
 
         file_name_list = []
         for file in os.listdir(self.data_dir):
@@ -168,10 +211,10 @@ class LayoutData(Dataset):
         enable_multiprocessing = True
         if enable_multiprocessing:
             with multiprocessing.Pool(self.num_repack_processes, initializer=process_init_fn) as pool:
-                pool.starmap(repack_one_npz, src_dst_list)
+                pool.starmap(self._repack_one_npz_partial, src_dst_list)
         else:
             for src_file, dst_file in src_dst_list:
-                repack_one_npz(src_file, dst_file)
+                self._repack_one_npz_partial(src_file, dst_file)
         print("Done repacking npz's.")
 
     def len(self) -> int:

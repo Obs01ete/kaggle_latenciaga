@@ -35,4 +35,5 @@ pip install tensorboard
 pip install six
 pip install wandb
 pip install attrs
+pip install pandas
 ```
