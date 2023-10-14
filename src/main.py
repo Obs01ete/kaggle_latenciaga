@@ -86,7 +86,7 @@ class Trainer:
                  oversample_factor: Optional[int] = None,
                  weight_decay: Optional[float] = None,
                  collection: Optional[str] = None,
-                 delete_duplicates: Optional[bool] = False,
+                 delete_duplicates: Optional[bool] = None,
                  tag: Optional[str] = None,
                  debug: bool = False) -> None:
 
@@ -98,6 +98,9 @@ class Trainer:
         else:
             self.collection = collection
         print(f"{self.collection=}")
+
+        if delete_duplicates is None:
+            delete_duplicates = True # turn on duplicate filtration by default
 
         self.is_tile = "tile-" in self.collection
 
@@ -654,7 +657,7 @@ def main():
                         help='Provide submission_val.csv, get score')
     parser.add_argument('--collection', action='store', type=str,
                         help='One of 4 collections. Default layout-xla-random if not set')
-    parser.add_argument('--delete-duplicates', action='store_true',
+    parser.add_argument('--delete-duplicates', action='store', type=bool,
                         help='Delete duplicates from source data')
     parser.add_argument('--tag', action='store', type=str,
                         help='Extra suffix to put on the artefact dir name')
