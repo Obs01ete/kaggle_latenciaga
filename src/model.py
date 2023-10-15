@@ -16,9 +16,18 @@ class Model(nn.Module):
 
     def __init__(self,
                  is_tile: bool,
+                 is_nlp: bool, # unused for now
+                 is_default: bool, # unused for now
+                 wider_config: bool,
                  node_config_feat_size: int = 18,
                  tile_config_feat_size: int = 24,
                  ):
+        """
+        Args:
+            is_tile (bool): False: layout, True: tile
+            is_nlp (bool): False: xla, True: nlp
+            is_default (bool): False: random, True: default
+        """
 
         super().__init__()
 
@@ -35,8 +44,12 @@ class Model(nn.Module):
                                  node_opcode_emb_size +
                                  config_feat_size)
         
-        in_channels = 32
-        channel_config = [64, 64, 128, 128, 256, 256]
+        if is_tile or wider_config: # enable wider config for tile by default
+            in_channels = 64
+            channel_config = [256, 256, 256, 256, 512, 512, 512, 512]
+        else:
+            in_channels = 32
+            channel_config = [64, 64, 128, 128, 256, 256]
         assert len(channel_config) > 0
 
         self.input_shaping = nn.Linear(concat_node_feat_size, in_channels)

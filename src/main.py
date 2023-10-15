@@ -85,6 +85,7 @@ class Trainer:
                  val_batch_size: Optional[int] = None,
                  oversample_factor: Optional[int] = None,
                  weight_decay: Optional[float] = None,
+                 wider_config: Optional[bool] = None,
                  collection: Optional[str] = None,
                  delete_duplicates: Optional[bool] = None,
                  tag: Optional[str] = None,
@@ -103,6 +104,8 @@ class Trainer:
             delete_duplicates = True # turn on duplicate filtration by default
 
         self.is_tile = "tile-" in self.collection
+        self.is_nlp = "-nlp-" in self.collection
+        self.is_default = "-default" in self.collection
 
         DEFAULT_DATA_PATH = "/home/khizbud/latenciaga/data/npz_all/npz"
         DEFAULT_MAX_ITERATIONS = 400_000 if self.is_tile else 200_000
@@ -134,6 +137,9 @@ class Trainer:
             self.weight_decay = weight_decay
         else:
             self.weight_decay = DEFAULT_WEIGHT_DECAY
+
+        if wider_config is None:
+            wider_config = False
 
         self.iters_per_val = DEFAULT_ITERS_PER_VAL
         cache_root = Path("data_cache_clean") if delete_duplicates else Path("data_cache")
@@ -190,7 +196,8 @@ class Trainer:
         else:
             self.batch_size = batch_size
 
-        self.model = Model(self.is_tile)
+        self.model = Model(self.is_tile, self.is_nlp, self.is_default,
+                           wider_config)
         self.model.to(self.device)
         
         if val_batch_size is None:
@@ -205,6 +212,14 @@ class Trainer:
     @property
     def full_batch_size(self):
         return self.batch_size * self.microbatch_size
+
+    @property
+    def is_xla(self) -> bool:
+        return not self.is_nlp
+
+    @property
+    def is_random(self) -> bool:
+        return not self.is_default
 
     def train(self) -> None:
 
@@ -260,12 +275,13 @@ class Trainer:
         # good ranking_margin = batch.config_runtime.mean / 200
 
         ranking_margin: float
-        if "-xla-" in self.collection:
-            ranking_margin = 1e-2 # sec
-        elif "-nlp-" in self.collection:
-            ranking_margin = 1.5e-4 # sec
-        else:
+        if self.is_tile:
             ranking_margin = 1e-1 # fractional units (not seconds)
+        else: # layout
+            if self.is_nlp:
+                ranking_margin = 1.5e-4 # sec
+            else: # xla
+                ranking_margin = 1e-2 # sec
 
         exit_training = False
         while True:
@@ -361,9 +377,14 @@ class Trainer:
                     p_value_list = []
                     for iub in range(self.batch_size):
                         ub_slice = slice(iub*self.microbatch_size, (iub+1)*self.microbatch_size)
-                        kendall, p_value = kendall_rank_corrcoef(
-                            pred[ub_slice], batch.config_runtime[ub_slice],
-                            t_test=True, alternative='two-sided')
+                        try:
+                            kendall, p_value = kendall_rank_corrcoef(
+                                pred[ub_slice], batch.config_runtime[ub_slice],
+                                t_test=True, alternative='two-sided')
+                        except NotImplementedError as ex:
+                            print(f"Warning: Skipping exception {str(ex)}")
+                            kendall = torch.tensor([float('nan')], dtype=pred.dtype, device=pred.device)
+                            p_value = torch.tensor([float('nan')], dtype=pred.dtype, device=pred.device)
                         kendall_list.append(kendall)
                         p_value_list.append(p_value)
                     kendall_total = torch.nanmean(torch.stack(kendall_list)).item()
@@ -459,6 +480,8 @@ class Trainer:
 
         if submission_csv_path is not None:
             self._prepare_submission(prediction_dict, submission_csv_path)
+
+        torch.cuda.empty_cache()
 
     def _prepare_submission(self,
                             prediction_dict: Dict[str, Dict[str, List[float]]],
@@ -649,6 +672,7 @@ def main():
                         help='Oversample factor')
     parser.add_argument('--weight-decay', action='store', type=float,
                         help='Weight decay')
+    parser.add_argument('--wider-config', action='store_true')
     parser.add_argument('--test-snapshot', action='store', type=str,
                         help='Provide .pth, get submission.csv')
     parser.add_argument('--start-from-pth', action='store', type=str,
@@ -672,6 +696,7 @@ def main():
                       val_batch_size=args.val_batch_size,
                       oversample_factor=args.oversample_factor,
                       weight_decay=args.weight_decay,
+                      wider_config=args.wider_config,
                       collection=args.collection,
                       delete_duplicates=args.delete_duplicates,
                       tag=args.tag,
