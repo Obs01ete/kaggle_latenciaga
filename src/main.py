@@ -88,6 +88,7 @@ class Trainer:
                  wider_config: Optional[bool] = None,
                  collection: Optional[str] = None,
                  delete_duplicates: Optional[bool] = None,
+                 enable_trainval: Optional[bool] = None,
                  tag: Optional[str] = None,
                  debug: bool = False) -> None:
 
@@ -102,6 +103,9 @@ class Trainer:
 
         if delete_duplicates is None:
             delete_duplicates = True # turn on duplicate filtration by default
+
+        if enable_trainval is None:
+            enable_trainval = False
 
         self.is_tile = "tile-" in self.collection
         self.is_nlp = "-nlp-" in self.collection
@@ -147,7 +151,7 @@ class Trainer:
         self.train_data = LayoutData(
             data_root,
             coll=self.collection,
-            split="train",
+            split="trainval" if enable_trainval else "train",
             microbatch_size=self.microbatch_size,
             oversample_factor=self.oversample_factor,
             cache_root=cache_root,
@@ -683,6 +687,8 @@ def main():
                         help='One of 4 collections. Default layout-xla-random if not set')
     parser.add_argument('--delete-duplicates', action='store', type=bool,
                         help='Delete duplicates from source data')
+    parser.add_argument('--enable-trainval', action='store', type=bool,
+                        help='Enable training on merged train and valid')
     parser.add_argument('--tag', action='store', type=str,
                         help='Extra suffix to put on the artefact dir name')
     parser.add_argument('--debug', action='store_true')
@@ -699,6 +705,7 @@ def main():
                       wider_config=args.wider_config,
                       collection=args.collection,
                       delete_duplicates=args.delete_duplicates,
+                      enable_trainval=args.enable_trainval,
                       tag=args.tag,
                       debug=args.debug)
     if args.test_snapshot is not None:

@@ -3,7 +3,7 @@ import os
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import Optional, Dict, Tuple, Union, Any
+from typing import Optional, Dict, Tuple, Union, Any, Sequence, List
 from functools import lru_cache
 from tqdm import tqdm
 from numpy.lib.npyio import NpzFile
@@ -117,7 +117,7 @@ class LayoutData(Dataset):
 
         assert os.path.exists(data_root)
 
-        if split == "train":
+        if split in {"train", "trainval"}:
             assert microbatch_size is not None
             # assert oversample_factor is not None
         if split in {"valid", "test"}:
@@ -126,12 +126,12 @@ class LayoutData(Dataset):
 
         assert coll in self.COLL
         self.coll = coll
-        assert split in self.SPLIT
+        assert split in self.SPLIT + ["trainval"]
         self.split = split
 
         self.num_repack_processes = num_repack_processes
 
-        self.is_tile = "tile-" in coll
+        self.is_tile = "tile-" in self.coll
         self._repack_one_npz_partial = partial(repack_one_npz,
                                                is_tile=self.is_tile,
                                                delete_duplicates=delete_duplicates)
@@ -142,19 +142,28 @@ class LayoutData(Dataset):
 
         self.convert_to_undirected = convert_to_undirected
 
-        orig_data_dir = data_root / self._get_coll_subpath(coll)
-        assert os.path.exists(orig_data_dir)
+        orig_data_dirs: List[Path]
+        if self.split == "trainval":
+            orig_data_dirs = [data_root / self._get_coll_subpath(curr_split)
+                                     for curr_split in ("train", "valid")]
+            for dir in orig_data_dirs:
+                assert os.path.exists(dir), f"Cannot find {dir}"
+        else:
+            orig_data_dirs = [data_root / self._get_coll_subpath(self.split)]
+            assert os.path.exists(orig_data_dirs[0]), f"Cannot find {orig_data_dirs}"
 
         self.data_dir: Path
         if repack_npz:
             print("Going with repacked npz's")
-            self.data_dir = cache_root / self._get_coll_subpath(coll)
+            self.data_dir = cache_root / self._get_coll_subpath(self.split)
             if not os.path.exists(self.data_dir):
                 os.makedirs(self.data_dir, exist_ok=True)
-                self._repack_data(orig_data_dir, self.data_dir)
+                self._repack_data(orig_data_dirs, self.data_dir)
         else:
             print("Going with original (non-repacked) npz's")
-            self.data_dir = orig_data_dir
+            assert len(orig_data_dirs) > 1, \
+                f"Cannot use this spllit {self.split} without repacking {orig_data_dirs}"
+            self.data_dir = orig_data_dirs[0]
 
         file_name_list = []
         for file in os.listdir(self.data_dir):
@@ -171,7 +180,7 @@ class LayoutData(Dataset):
         self._len: int
         self.map_idx_to_name_and_config: \
             Optional[Dict[int, Dict[str, Union[int, str]]]]
-        if self.split == "train":
+        if self.split in {"train", "trainval"}:
             self.map_idx_to_name_and_config = None
             self._len = len(self.file_name_list)
         else:
@@ -198,14 +207,15 @@ class LayoutData(Dataset):
             self._len = len(self.map_idx_to_name_and_config)
         pass
 
-    def _repack_data(self, orig_data_dir, cache_dir):
+    def _repack_data(self, orig_data_dirs: Sequence[Path], cache_dir: Path):
         src_dst_list = []
-        for file in tqdm(os.listdir(orig_data_dir)):
-            if not file.endswith(".npz"):
-                continue
-            src_file = str(orig_data_dir/file)
-            dst_file = str(cache_dir/file)
-            src_dst_list.append((src_file, dst_file))
+        for orig_data_dir in orig_data_dirs:
+            for file in tqdm(os.listdir(orig_data_dir)):
+                if not file.endswith(".npz"):
+                    continue
+                src_file = str(orig_data_dir/file)
+                dst_file = str(cache_dir/file)
+                src_dst_list.append((src_file, dst_file))
 
         print("Repacking npz's...")
         enable_multiprocessing = True
@@ -355,23 +365,23 @@ class LayoutData(Dataset):
         # it is passed through out of __getitem__.
         return microbatch # type: ignore
 
-    def _get_coll_subpath(self, coll: str) -> Path:
+    def _get_coll_subpath(self, split: str) -> Path:
         """Parse the collection and return the corresponding data root.
         
         Parameters:
-            coll: collection
+            split: split
 
         Return
             data_root: data root of the collection
         """
-        coll_terms = coll.split("-")
+        coll_terms = self.coll.split("-")
         if len(coll_terms) == 3:
             optim, src, search = coll_terms
             assert search in self.SEARCH
-            subpath = Path(f"{optim}/{src}/{search}/{self.split}")
+            subpath = Path(f"{optim}/{src}/{search}/{split}")
         else:
             optim, src = coll_terms
-            subpath = Path(f"{optim}/{src}/{self.split}")
+            subpath = Path(f"{optim}/{src}/{split}")
         
         assert optim in self.OPTIM
         assert src in self.SRC
