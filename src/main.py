@@ -420,6 +420,10 @@ class Trainer:
                         grad_norm = clip_grad_norm_(self.model.parameters(), grad_clip_val).item()
                         self.logger.add_scalar(f"train/{specific_name}", grad_norm, self.iteration)
 
+                    all_param_norm = [torch.norm(p.detach()) for p in self.model.parameters()]
+                    total_param_norm = torch.norm(torch.tensor(all_param_norm)).item()
+                    self.logger.add_scalar(f"train/param_norm", total_param_norm, self.iteration)
+
                 optimizer.zero_grad()
                 loss.backward(retain_graph=True)
                 optimizer.step()
