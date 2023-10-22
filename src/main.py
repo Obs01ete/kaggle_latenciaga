@@ -403,7 +403,7 @@ class Trainer:
                     )
                     print("kendall=", kendall_total, "p_value=", p_value_total)
                     self.logger.add_scalar("train/kendall", kendall_total, self.iteration)
-                    self.logger.add_scalar("train/p_value", p_value_total, self.iteration)
+                    # self.logger.add_scalar("train/p_value", p_value_total, self.iteration)
                     self.logger.add_scalar("train/epoch", epoch, self.iteration)
 
                 if self.iteration % train_print_interval == 0:
@@ -611,6 +611,9 @@ class Trainer:
                 tile_metric = tile_topk_metric(torch.tensor(pred_all), torch.tensor(target_all))
                 tile_topk_list.append(tile_metric.item())
 
+            if self.logger is not None:
+                self.logger.add_scalar(f"val/kendall/{name}", kendall_grand_list[-1], self.iteration)
+
         kendall_grand = np.mean(kendall_grand_list).item()
         p_value_grand = np.mean(p_value_grand_list).item()
         print(f"{split} kendall=", kendall_grand, "p_value=", p_value_grand)
@@ -622,7 +625,7 @@ class Trainer:
         if self.logger is not None:
             self.logger.add_scalar("val/loss", loss_grand, self.iteration)
             self.logger.add_scalar("val/kendall", kendall_grand, self.iteration)
-            self.logger.add_scalar("val/p_value", p_value_grand, self.iteration)
+            # self.logger.add_scalar("val/p_value", p_value_grand, self.iteration)
         return kendall_grand, loss_grand
 
     def save_submission(self,
