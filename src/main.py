@@ -89,6 +89,7 @@ class Trainer:
                  collection: Optional[str] = None,
                  delete_duplicates: Optional[bool] = None,
                  enable_trainval: Optional[bool] = None,
+                 validate_first: Optional[bool] = None,
                  tag: Optional[str] = None,
                  debug: bool = False) -> None:
 
@@ -106,6 +107,11 @@ class Trainer:
 
         if enable_trainval is None:
             enable_trainval = False
+
+        if validate_first is None:
+            self.validate_first = False
+        else:
+            self.validate_first = validate_first
 
         self.is_tile = "tile-" in self.collection
         self.is_nlp = "-nlp-" in self.collection
@@ -240,7 +246,8 @@ class Trainer:
 
         self.iteration = 0
 
-        # self.validate() # for quick debug
+        if self.validate_first:
+            self.validate()
 
         train_loader: DataLoader[Batch] = DataLoader(
             self.train_data,
@@ -696,6 +703,8 @@ def main():
                         help='Delete duplicates from source data')
     parser.add_argument('--enable-trainval', action='store', type=bool,
                         help='Enable training on merged train and valid')
+    parser.add_argument('--validate-first', action='store_true',
+                        help="Enable to run validation before training starts")
     parser.add_argument('--tag', action='store', type=str,
                         help='Extra suffix to put on the artefact dir name')
     parser.add_argument('--debug', action='store_true')
@@ -713,6 +722,7 @@ def main():
                       collection=args.collection,
                       delete_duplicates=args.delete_duplicates,
                       enable_trainval=args.enable_trainval,
+                      validate_first=args.validate_first,
                       tag=args.tag,
                       debug=args.debug)
     if args.test_snapshot is not None:
