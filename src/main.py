@@ -612,14 +612,16 @@ class Trainer:
                 torch.tensor(pred_all), torch.tensor(target_all),
                 t_test=True, alternative='two-sided')
 
-            kendall_grand_list.append(kendall.item())
-            p_value_grand_list.append(p_value.item())
+            if "unet" not in name:
+                kendall_grand_list.append(kendall.item())
+                p_value_grand_list.append(p_value.item())
+
             if self.is_tile:
                 tile_metric = tile_topk_metric(torch.tensor(pred_all), torch.tensor(target_all))
                 tile_topk_list.append(tile_metric.item())
 
             if self.logger is not None:
-                self.logger.add_scalar(f"val/kendall/{name}", kendall_grand_list[-1], self.iteration)
+                self.logger.add_scalar(f"val/kendall/{name}", kendall.item(), self.iteration)
 
         kendall_grand = np.mean(kendall_grand_list).item()
         p_value_grand = np.mean(p_value_grand_list).item()

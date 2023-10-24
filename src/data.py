@@ -131,6 +131,8 @@ class LayoutData(Dataset):
 
         self.num_repack_processes = num_repack_processes
 
+        is_layout_xla = "layout-xla-" in self.coll
+
         self.is_tile = "tile-" in self.coll
         self._repack_one_npz_partial = partial(repack_one_npz,
                                                is_tile=self.is_tile,
@@ -171,6 +173,12 @@ class LayoutData(Dataset):
                 continue
             data_file = str(self.data_dir/file)
             file_name_list.append(data_file)
+
+        if is_layout_xla:
+            if split in {"train", "trainval"}:
+                file_name_list = [v for v in file_name_list if not "unet" in v]
+            else:
+                pass
 
         if oversample_factor is not None:
             self.file_name_list = file_name_list * oversample_factor
