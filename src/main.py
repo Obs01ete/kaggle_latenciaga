@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
-from typing import Sequence, Dict, Optional, List, Any
+from typing import Sequence, Dict, Optional, List, Any, Tuple
+from click import Option
 import numpy as np
 from tqdm import tqdm
 from collections import defaultdict
@@ -20,7 +21,7 @@ from torch.nn.utils.clip_grad import clip_grad_norm_
 from torchmetrics.functional.regression import kendall_rank_corrcoef
 from torchmetrics import MeanAbsolutePercentageError
 
-from src.data import LayoutData
+from src.data import LayoutData, Purpose
 from src.model import Model
 from src.metrics import tile_topk_metric
 from src.wandb_support import init_wandb, try_upload_artefacts
@@ -158,6 +159,7 @@ class Trainer:
             data_root,
             coll=self.collection,
             split="trainval" if enable_trainval else "train",
+            purpose=Purpose.Train,
             microbatch_size=self.microbatch_size,
             oversample_factor=self.oversample_factor,
             cache_root=cache_root,
@@ -168,6 +170,7 @@ class Trainer:
             data_root,
             coll=self.collection,
             split="valid",
+            purpose=Purpose.Valid,
             cache_root=cache_root,
             delete_duplicates=delete_duplicates,
         )
@@ -178,7 +181,8 @@ class Trainer:
             coll=self.collection,
             cache_root=cache_root,
             delete_duplicates=False,
-            split="test")
+            split="test",
+            purpose=Purpose.Test)
 
         if max_iterations is None:
             self.max_iterations = DEFAULT_MAX_ITERATIONS
@@ -218,6 +222,8 @@ class Trainer:
         self.stats = StatsKeeper()
 
         self.loss_op = MeanAbsolutePercentageError().to(self.device)
+
+        self.iteration: Optional[int] = None
     
     @property
     def full_batch_size(self):
@@ -482,19 +488,27 @@ class Trainer:
 
         assert split in {'valid', 'test'}
 
+        iteration = self.iteration if self.iteration is not None else 0
+
         loss_list, prediction_dict = self._make_predictions(split)
-        
-        if split == 'valid':
-            val_kendall, val_loss = self._compute_metrics(
+
+        kendall_dict = None
+        if split in {'valid'}:
+            val_kendall, val_loss, kendall_dict = self._compute_metrics(
                 split, loss_list, prediction_dict)
             self.stats.update_val(
-                iteration=self.iteration,
+                iteration=iteration,
                 val_kendall=val_kendall,
                 val_loss=val_loss,
             )
 
         if submission_csv_path is not None:
             self._prepare_submission(prediction_dict, submission_csv_path)
+
+            if kendall_dict is not None:
+                with open(submission_csv_path+"_details.csv", "w") as f:
+                    for key, val in kendall_dict.items():
+                        f.write(f"{key},{val}\n")
 
         torch.cuda.empty_cache()
 
@@ -535,8 +549,10 @@ class Trainer:
     def _make_predictions(self, split: str):
         worker_threads = (self.worker_threads if self.is_tile
                           else self.worker_threads // 4)
+        data = self.val_data if split == 'valid' else \
+            self.test_data  # else test
         loader: DataLoader[Batch] = DataLoader(
-            self.val_data if split == 'valid' else self.test_data,
+            data,
             batch_size=self.val_batch_size,
             shuffle=False,
             num_workers=worker_threads,
@@ -594,7 +610,8 @@ class Trainer:
     
     def _compute_metrics(self, split:str,
                          loss_list: Optional[List[float]],
-                         prediction_dict: Dict[str, Dict[str, List[float]]]):
+                         prediction_dict: Dict[str, Dict[str, List[float]]]) -> \
+                         Tuple[float, float, Dict[str, float]]:
         if loss_list is not None and len(loss_list) > 0:
             loss_grand = np.mean(np.array(loss_list, dtype=np.float32)).item()
             print(f"{split} loss = {loss_grand:.5f}")
@@ -604,6 +621,7 @@ class Trainer:
         kendall_grand_list = []
         p_value_grand_list = []
         tile_topk_list = []
+        kendall_dict: Dict[str, float] = {}
         for name, dol in prediction_dict.items():
             pred_all = np.array(dol['pred_list'], dtype=np.float32)
             target_all = np.array(dol['target_list'], dtype=np.float32)
@@ -623,19 +641,24 @@ class Trainer:
             if self.logger is not None:
                 self.logger.add_scalar(f"val/kendall/{name}", kendall.item(), self.iteration)
 
+            print(f"val/kendall/{name} {kendall.item()}")
+            kendall_dict[name] = kendall.item()
+
         kendall_grand = np.mean(kendall_grand_list).item()
         p_value_grand = np.mean(p_value_grand_list).item()
         print(f"{split} kendall=", kendall_grand, "p_value=", p_value_grand)
-        assert self.logger is not None
+
         if self.is_tile:
             tile_topk_grand = np.mean(tile_topk_list).item()
             print(f"{split} tile_top_k=", tile_topk_grand)
-            self.logger.add_scalar("val/tile_top_k", tile_topk_grand, self.iteration)
+            if self.logger is not None:
+                self.logger.add_scalar("val/tile_top_k", tile_topk_grand, self.iteration)
+
         if self.logger is not None:
             self.logger.add_scalar("val/loss", loss_grand, self.iteration)
             self.logger.add_scalar("val/kendall", kendall_grand, self.iteration)
             # self.logger.add_scalar("val/p_value", p_value_grand, self.iteration)
-        return kendall_grand, loss_grand
+        return kendall_grand, loss_grand, kendall_dict
 
     def save_submission(self,
                         submission_dict: Dict[str, np.ndarray],

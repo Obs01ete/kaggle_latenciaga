@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from typing import Optional, Dict, Tuple, Union, Any, Sequence, List
+from enum import Enum
 from functools import lru_cache
 from tqdm import tqdm
 from numpy.lib.npyio import NpzFile
@@ -24,6 +25,16 @@ def random_sample(d: Dict[Any, Any], num) -> Dict[Any, Any]:
     indices.sort()
     do = {i: d[idx] for i, idx in enumerate(indices)}
     return do
+
+
+def random_sample_indices(config_indices: np.ndarray,
+                          max_configs: int) -> np.ndarray:
+    if len(config_indices) <= max_configs:
+        return config_indices
+    ii = np.random.choice(np.arange(len(config_indices)), max_configs)
+    ii.sort()
+    return_indices = config_indices[ii]
+    return return_indices
 
 
 def delete_dupl(npz_dict: dict, is_tile: bool) -> dict:
@@ -77,6 +88,12 @@ def repack_one_npz(src_file: str, dst_file: str, is_tile: bool = False, delete_d
         np.savez_compressed(dst_file, **new_data, allow_pickle=False)
 
 
+class Purpose(Enum):
+    Train = 1
+    Valid = 2
+    Test = 3
+
+
 class LayoutData(Dataset):
     # Compiler optimization
     OPTIM = ["layout", "tile"]
@@ -104,6 +121,7 @@ class LayoutData(Dataset):
             data_root: Path,
             coll: str,
             split: str,
+            purpose: Purpose,
             microbatch_size: Optional[int] = None,
             oversample_factor: Optional[int] = None,
             convert_to_undirected: bool = False,
@@ -117,10 +135,10 @@ class LayoutData(Dataset):
 
         assert os.path.exists(data_root)
 
-        if split in {"train", "trainval"}:
+        if purpose in {Purpose.Train}:
             assert microbatch_size is not None
             # assert oversample_factor is not None
-        if split in {"valid", "test"}:
+        if split in {Purpose.Valid, Purpose.Test}:
             assert microbatch_size is None
             assert oversample_factor is None
 
@@ -128,6 +146,7 @@ class LayoutData(Dataset):
         self.coll = coll
         assert split in self.SPLIT + ["trainval"]
         self.split = split
+        self.purpose = purpose
 
         self.num_repack_processes = num_repack_processes
 
@@ -138,7 +157,7 @@ class LayoutData(Dataset):
                                                is_tile=self.is_tile,
                                                delete_duplicates=delete_duplicates)
 
-        MAX_VAL_SAMPLES = 2_000_000 if self.is_tile else 80_000
+        MAX_CONFIGS_PER_GRAPH = 1000 # both layout and tile
 
         self.microbatch_size = microbatch_size
 
@@ -156,8 +175,8 @@ class LayoutData(Dataset):
 
         self.data_dir: Path
         if repack_npz:
-            print("Going with repacked npz's")
             self.data_dir = cache_root / self._get_coll_subpath(self.split)
+            print(f"Going with repacked npz's from {self.data_dir}")
             if not os.path.exists(self.data_dir):
                 os.makedirs(self.data_dir, exist_ok=True)
                 self._repack_data(orig_data_dirs, self.data_dir)
@@ -187,30 +206,25 @@ class LayoutData(Dataset):
 
         self._len: int
         self.map_idx_to_name_and_config: \
-            Optional[Dict[int, Dict[str, Union[int, str]]]]
-        if self.split in {"train", "trainval"}:
+            Optional[Dict[int, Dict[str, Any]]]
+        if self.purpose == Purpose.Train:
             self.map_idx_to_name_and_config = None
             self._len = len(self.file_name_list)
         else:
             idx = 0
             self.map_idx_to_name_and_config = dict()
-            for file_path in self.file_name_list:
+            for file_path in tqdm(self.file_name_list):
                 npz = np.load(file_path)
                 num_configs = npz["config_runtime"].shape[0]
-                for config_idx in range(num_configs):
+                config_indices = np.arange(num_configs)
+                if purpose != Purpose.Test: # ie Purpose.Valid
+                    config_indices = random_sample_indices(config_indices,
+                                                           MAX_CONFIGS_PER_GRAPH)
+                for config_idx in config_indices:
                     self.map_idx_to_name_and_config[idx] = dict(
                         file_path=file_path,
                         config_idx=config_idx)
                     idx += 1
-
-            if len(self.map_idx_to_name_and_config) > MAX_VAL_SAMPLES:
-                print(f"Random sampling val {len(self.map_idx_to_name_and_config)} "
-                      f"to {MAX_VAL_SAMPLES} samples")
-                self.map_idx_to_name_and_config = \
-                    random_sample(self.map_idx_to_name_and_config,
-                                  MAX_VAL_SAMPLES)
-            else:
-                print(f"Using all validation samples")
 
             self._len = len(self.map_idx_to_name_and_config)
         pass
@@ -400,6 +414,7 @@ class LayoutData(Dataset):
     def _convert_graph_to_undirected(directed: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # Convert to undirected
         undirected = to_undirected(directed)
+        assert isinstance(undirected, torch.Tensor)
 
         # Create edge labels for the undirected graph
         edge_labels = torch.ones(undirected.size(1), dtype=torch.float32)
