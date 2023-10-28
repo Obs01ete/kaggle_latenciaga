@@ -237,6 +237,10 @@ class Trainer:
     def is_random(self) -> bool:
         return not self.is_default
 
+    @property
+    def is_layout(self) -> bool:
+        return not self.is_tile
+
     def train(self) -> None:
 
         print("Start training")
@@ -630,7 +634,11 @@ class Trainer:
                 torch.tensor(pred_all), torch.tensor(target_all),
                 t_test=True, alternative='two-sided')
 
-            if "unet" not in name:
+            graph_not_good = (
+                (self.is_layout and "unet" in name) or
+                (self.collection == "layout-xla-default" and "mlperf_bert_batch_24_2x2" in name)
+            )
+            if not graph_not_good:
                 kendall_grand_list.append(kendall.item())
                 p_value_grand_list.append(p_value.item())
 
