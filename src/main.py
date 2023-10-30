@@ -9,6 +9,7 @@ from argparse import ArgumentParser
 import time
 import datetime
 import math
+import pandas as pd
 
 import torch
 from torch.utils.tensorboard.writer import SummaryWriter
@@ -77,9 +78,14 @@ def get_model_parameters(model: torch.nn.Module,
     return optimizer_grouped_parameters
 
 
+def insert_suffix(path: str, suffix: str) -> str:
+    path_wo_ext, ext = os.path.splitext(path)
+    return path_wo_ext + suffix + ext
+
+
 class Trainer:
     def __init__(self,
-                 source_data_path: Optional[str] = None,
+                 data_root: Optional[str] = None,
                  max_iterations: Optional[int] = None,
                  batch_size: Optional[int] = None,
                  microbatch_size: Optional[int] = None,
@@ -118,7 +124,7 @@ class Trainer:
         self.is_nlp = "-nlp-" in self.collection
         self.is_default = "-default" in self.collection
 
-        DEFAULT_DATA_PATH = "/home/khizbud/latenciaga/data/npz_all/npz"
+        DEFAULT_DATA_ROOT = "/home/khizbud/latenciaga/data"
         DEFAULT_MAX_ITERATIONS = 400_000 if self.is_tile else 200_000
         DEFAULT_BATCH_SIZE = 100 if self.is_tile else 10
         DEFAULT_MICROBATCH_SIZE = 10 if self.is_tile else 4
@@ -127,12 +133,13 @@ class Trainer:
         DEFAULT_WEIGHT_DECAY = 0.0
         DEFAULT_ITERS_PER_VAL = 10_000 if self.is_tile else 2_000
 
-        if source_data_path is None:
-            self.source_data_path = DEFAULT_DATA_PATH
+        if data_root is None:
+            self.data_root = DEFAULT_DATA_ROOT
         else:
-            self.source_data_path = source_data_path
-    
-        data_root = Path(self.source_data_path).expanduser()
+            self.data_root = data_root
+
+        collections_root_str = os.path.join(self.data_root, "npz_all/npz")
+        collections_root = Path(collections_root_str).expanduser()
 
         if microbatch_size is None:
             self.microbatch_size = DEFAULT_MICROBATCH_SIZE
@@ -156,7 +163,7 @@ class Trainer:
         cache_root = Path("data_cache_clean") if delete_duplicates else Path("data_cache")
 
         self.train_data = LayoutData(
-            data_root,
+            collections_root,
             coll=self.collection,
             split="trainval" if enable_trainval else "train",
             purpose=Purpose.Train,
@@ -167,7 +174,7 @@ class Trainer:
         )
 
         self.val_data = LayoutData(
-            data_root,
+            collections_root,
             coll=self.collection,
             split="valid",
             purpose=Purpose.Valid,
@@ -177,7 +184,7 @@ class Trainer:
 
         # don't delete duplicates for test but use the same folder as train and val
         self.test_data = LayoutData(
-            data_root,
+            collections_root,
             coll=self.collection,
             cache_root=cache_root,
             delete_duplicates=False,
@@ -198,6 +205,7 @@ class Trainer:
             worker_threads = default_worker_threads
         self.worker_threads = 0 if self.debug else worker_threads
 
+        self.art_dir_name: Optional[str] = None
         self.artefact_dir: Optional[str] = None
         self.logger: Optional[SummaryWriter] = None
 
@@ -246,9 +254,9 @@ class Trainer:
         print("Start training")
 
         datetime_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        art_dir_name = (f"{datetime_str}_{self.collection}" +
+        self.art_dir_name = (f"{datetime_str}_{self.collection}" +
                         (f"_{self.tag}" if self.tag is not None else ""))
-        self.artefact_dir = os.path.join("runs", art_dir_name)
+        self.artefact_dir = os.path.join("runs", self.art_dir_name)
         os.makedirs(self.artefact_dir, exist_ok=True)
 
         if self.logger is None:
@@ -473,18 +481,19 @@ class Trainer:
                       if self.oversample_factor is not None else 1)
 
         self._save_ckpt()
-        self.test("end_of_train_submission.csv")
+        self.test("end_of_train_sub.csv")
     
     def validate(self):
         print("Validating...")
-        self._validate('valid', "submission_val_auto.csv")
-        self._validate('test', "submission_test_auto.csv")
+        auto_name = "auto.csv"
+        self._validate('valid', insert_suffix(auto_name, "_val"))
+        self._validate('test', auto_name)
         print("Validation done")
     
     def test(self, submission_csv_path: str):
         print("Testing...")
         self._validate('test', submission_csv_path)
-        self._validate('valid', submission_csv_path+"_val.csv")
+        self._validate('valid', insert_suffix(submission_csv_path, "_val"))
         print("Testing done")
 
     def _validate(self, split: str,
@@ -507,10 +516,11 @@ class Trainer:
             )
 
         if submission_csv_path is not None:
-            self._prepare_submission(prediction_dict, submission_csv_path)
+            self._prepare_submission(prediction_dict, submission_csv_path,
+                  make_injected = split == 'test')
 
             if kendall_dict is not None:
-                with open(submission_csv_path+"_details.csv", "w") as f:
+                with open(insert_suffix(submission_csv_path, "_details"), "w") as f:
                     for key, val in kendall_dict.items():
                         f.write(f"{key},{val}\n")
 
@@ -518,7 +528,8 @@ class Trainer:
 
     def _prepare_submission(self,
                             prediction_dict: Dict[str, Dict[str, List[float]]],
-                            submission_csv_path: str):
+                            submission_csv_path: str,
+                            make_injected: bool = False):
         # Prepare submission
         submission_dict: Dict[str, np.ndarray] = dict()
         for name, dol in prediction_dict.items():
@@ -534,6 +545,22 @@ class Trainer:
                                                submission_csv_path)
         self.save_submission(submission_dict, submission_csv_path)
         print(f"Saved to {submission_csv_path}")
+
+        if make_injected:
+            sub = pd.read_csv(os.path.join(self.data_root, 'sample_submission.csv'))
+            orig_len = len(sub)
+            for filename, ranks_np in submission_dict.items():
+                id = self.collection.replace('-', ':') + ':' + filename
+                ranks_str = ';'.join([str(int(v)) for v in ranks_np])
+                sub.loc[sub.ID == id, 'TopConfigs'] = ranks_str
+            if len(sub) != orig_len:
+                print("WARNING: injected submission may be corrupted")
+            extra_suffix = f"_{self.art_dir_name}" if self.art_dir_name is not None else ""
+            injected_path = insert_suffix(submission_csv_path, f"_injected{extra_suffix}")
+            sub.to_csv(injected_path, index=False)
+            print(f"Saved to {injected_path}")
+
+        return
 
     def _save_ckpt(self, ckpt_name="latest.pth", best_ckpt_name="best.pth"):
         assert self.artefact_dir is not None
@@ -709,8 +736,8 @@ class Trainer:
 
 def main():
     parser = ArgumentParser(description='Latenciaga')
-    parser.add_argument('--source-data-path', action='store', type=str,
-                        help='Provide path to data folder in format */data/npz_all/npz')
+    parser.add_argument('--data-root', action='store', type=str,
+                        help='Provide path to data folder that holds npz_all/ and sample_submission.csv')
     parser.add_argument('--max-iterations', '-i', action='store', type=int,
                         help='Maximum number of iterations')
     parser.add_argument('--batch-size', action='store', type=int,
@@ -744,7 +771,7 @@ def main():
     parser.add_argument('--enable-wandb', action='store_true')
     args = parser.parse_args()
 
-    trainer = Trainer(source_data_path=args.source_data_path,
+    trainer = Trainer(data_root=args.data_root,
                       max_iterations=args.max_iterations,
                       batch_size=args.batch_size,
                       microbatch_size=args.microbatch_size,
@@ -760,7 +787,7 @@ def main():
                       debug=args.debug)
     if args.test_snapshot is not None:
         trainer.load_snapshot(args.test_snapshot)
-        trainer.test("test_submission.csv")
+        trainer.test("test_sub.csv")
     elif args.test_val_submission_csv is not None:
         trainer.test_val_submission_csv(args.test_val_submission_csv)
     else:
