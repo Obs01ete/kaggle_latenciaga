@@ -1,10 +1,11 @@
 import os
 from pathlib import Path
-from typing import Sequence, Dict, Optional, List, Any, Tuple
+from typing import Sequence, Dict, Optional, List, Any, Tuple, Callable
 from click import Option
 import numpy as np
 from tqdm import tqdm
-from collections import defaultdict
+from collections import defaultdict, deque
+from functools import partial
 from argparse import ArgumentParser
 import time
 import datetime
@@ -132,6 +133,7 @@ class Trainer:
         DEFAULT_OVERSAMPLE_FACTOR = 100
         DEFAULT_WEIGHT_DECAY = 0.0
         DEFAULT_ITERS_PER_VAL = 10_000 if self.is_tile else 2_000
+        DEFAULT_ITERS_PER_TRAIN_KENDALL_PRINT = 2_500 if self.is_tile else 500
 
         if data_root is None:
             self.data_root = DEFAULT_DATA_ROOT
@@ -160,6 +162,8 @@ class Trainer:
             wider_config = False
 
         self.iters_per_val = DEFAULT_ITERS_PER_VAL
+        self.iters_per_train_kendall_print = DEFAULT_ITERS_PER_TRAIN_KENDALL_PRINT
+
         cache_root = Path("data_cache_clean") if delete_duplicates else Path("data_cache")
 
         self.train_data = LayoutData(
@@ -312,6 +316,9 @@ class Trainer:
             else: # xla
                 ranking_margin = 1e-2 # sec
 
+        bound_deque: Callable[[], deque[float]] = partial(deque, maxlen=100)
+        kendall_deq_dict: Dict[str, deque[float]] = defaultdict(bound_deque)
+
         exit_training = False
         while True:
             if exit_training:
@@ -416,6 +423,13 @@ class Trainer:
                             p_value = torch.tensor([float('nan')], dtype=pred.dtype, device=pred.device)
                         kendall_list.append(kendall)
                         p_value_list.append(p_value)
+
+                    # keep stats per train file
+                    for fname, kendall_val in zip(
+                            batch.fname[::self.microbatch_size],
+                            [v.item() for v in kendall_list]):
+                        kendall_deq_dict[fname].append(kendall_val)
+
                     kendall_total = torch.nanmean(torch.stack(kendall_list)).item()
                     p_value_total = torch.nanmean(torch.stack(p_value_list)).item()
                     self.stats.update_train(
@@ -469,6 +483,9 @@ class Trainer:
                     print(f"{validation_dur=}")
                     self.logger.add_scalar("val/validation_dur", validation_dur, self.iteration)
 
+                if self.iteration % self.iters_per_train_kendall_print == 0:
+                    self._log_train_kendall(kendall_deq_dict)
+
                 end_iter_ts = time.time()
 
                 lr_scheduler.step()
@@ -482,6 +499,31 @@ class Trainer:
 
         self._save_ckpt()
         self.test("end_of_train_sub.csv")
+
+    def _log_train_kendall(self, kendall_deq_dict: Dict[str, deque[float]]):
+        assert self.logger is not None
+        kendall_agg_dict = {}
+        for k in kendall_deq_dict:
+            kendall_agg_dict[k] = np.mean(list(kendall_deq_dict[k]))
+        sorted_by_name_dict = dict(sorted(kendall_agg_dict.items()))
+        sorted_by_value_dict = dict(sorted(kendall_agg_dict.items(),
+                                            key=lambda tup: tup[1]))
+        sorted_by_name_str = "  \n".join([f"{k}: {v}"
+                                            for k, v in sorted_by_name_dict.items()])
+        sorted_by_value_str = "  \n".join([f"{k}: {v}"
+                                            for k, v in sorted_by_value_dict.items()])
+        if self.logger:
+            self.logger.add_text(
+                "train kendall (sorted by name)",
+                sorted_by_name_str,
+                self.iteration
+            )
+            self.logger.add_text(
+                "train kendall (sorted by kendall)",
+                sorted_by_value_str,
+                self.iteration
+            )
+        return
     
     def validate(self):
         print("Validating...")
