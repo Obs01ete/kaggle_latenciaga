@@ -312,7 +312,7 @@ class Trainer:
                 'output_shaping.weight': output_shaping_wd,
                 'output_shaping.bias': output_shaping_wd})
         
-        optimizer = torch.optim.Adam(optimized_parameters, lr=1e-3, eps=1e-6)
+        optimizer = torch.optim.AdamW(optimized_parameters, lr=1e-3, eps=1e-6)
 
         # milestones = [v*10_000 for v in (1, 2, 3, 4)] # finalization schedule for layout
         # milestones = [v*20_000 for v in (1, 2, 3, 4)] # finalization schedule for tile
