@@ -18,4 +18,4 @@ conda activate latenciaga4
 
 . ./tag.sh
 
-PYTHONPATH=. python src/main.py --collection=layout-xla-random --tag=${SLURM_JOB_ID}_${TAG} ${EXTRA_KEY}
+PYTHONPATH=. python src/main.py --collection=layout-xla-random --tag=${SLURM_JOB_ID}_${TAG}_long ${EXTRA_KEY} --max-iterations=400000

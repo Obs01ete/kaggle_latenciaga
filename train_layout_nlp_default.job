@@ -18,4 +18,4 @@ conda activate latenciaga4
 
 . ./tag.sh
 
-PYTHONPATH=. python src/main.py --collection=layout-nlp-default --tag=${SLURM_JOB_ID}_${TAG} ${EXTRA_KEY} --max-iterations=100000
+PYTHONPATH=. python src/main.py --collection=layout-nlp-default --tag=${SLURM_JOB_ID}_${TAG} ${EXTRA_KEY}

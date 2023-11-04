@@ -30,6 +30,8 @@ from src.wandb_support import init_wandb, try_upload_artefacts
 from src.stats_keeper import StatsKeeper
 from src.sys_utils import worker_init_fn
 
+from src.allrank_losses.listMLE import listMLE
+
 
 def concat_premade_microbatches(microbatch_list: Sequence[Batch]):
     grand_list = []
@@ -59,29 +61,51 @@ def get_parameter_names(model, forbidden_layer_types):
 
 def get_model_parameters(model: torch.nn.Module,
                          weight_decay: float = 0,
+                         explicit_assignment: Optional[Dict[str, float]] = None,
                          exclude_patterns: Optional[List[str]] = None
                          ) -> List[Dict[str, Any]]:
     decay_parameters = get_parameter_names(model, [torch.nn.LayerNorm])
+    if explicit_assignment is not None:
+        decay_parameters = [name for name in decay_parameters
+                            if name not in explicit_assignment.keys()]
     decay_parameters = [name for name in decay_parameters if ".bias" not in name]
     if exclude_patterns is not None:
         decay_parameters = [name for name in decay_parameters
                             if not any(pat in name for pat in exclude_patterns)]
+    explicit_assignment_keys = explicit_assignment.keys() \
+        if explicit_assignment is not None else set()
     optimizer_grouped_parameters = [
         {
-            "params": [p for n, p in model.named_parameters() if n in decay_parameters],
+            "params": [p for n, p in model.named_parameters()
+                       if n in decay_parameters],
             "weight_decay": weight_decay,
         },
         {
-            "params": [p for n, p in model.named_parameters() if n not in decay_parameters],
+            "params": [p for n, p in model.named_parameters()
+                       if n not in decay_parameters and
+                       n not in explicit_assignment_keys],
             "weight_decay": 0.0,
         },
     ]
+    if explicit_assignment is not None:
+        for name, decay in explicit_assignment.items():
+            group = dict(params=[p for n, p in model.named_parameters() if n == name],
+                        weight_decay=decay)
+            optimizer_grouped_parameters.append(group)
     return optimizer_grouped_parameters
 
 
 def insert_suffix(path: str, suffix: str) -> str:
     path_wo_ext, ext = os.path.splitext(path)
     return path_wo_ext + suffix + ext
+
+
+def L2Clip(pred: torch.Tensor, max_norm: float, dim: int = -1):
+    norms = torch.norm(pred, dim=dim)
+    overshoots = torch.maximum(norms, max_norm*torch.ones_like(norms)) / \
+        (max_norm*torch.ones_like(norms))
+    clipped = pred / overshoots.unsqueeze(1)
+    return clipped
 
 
 class Trainer:
@@ -127,8 +151,8 @@ class Trainer:
 
         DEFAULT_DATA_ROOT = "/home/khizbud/latenciaga/data"
         DEFAULT_MAX_ITERATIONS = 400_000 if self.is_tile else 200_000
-        DEFAULT_BATCH_SIZE = 100 if self.is_tile else 10
-        DEFAULT_MICROBATCH_SIZE = 10 if self.is_tile else 4
+        DEFAULT_BATCH_SIZE = 100 if self.is_tile else 4 if self.is_nlp else 4
+        DEFAULT_MICROBATCH_SIZE = 10 if self.is_tile else 10 if self.is_nlp else 10
         DEFAULT_VAL_BATCH_SIZE = 400 if self.is_tile else 40
         DEFAULT_OVERSAMPLE_FACTOR = 100
         DEFAULT_WEIGHT_DECAY = 0.0
@@ -233,8 +257,6 @@ class Trainer:
         self.test_batch_size = self.val_batch_size
         self.stats = StatsKeeper()
 
-        self.loss_op = MeanAbsolutePercentageError().to(self.device)
-
         self.iteration: Optional[int] = None
     
     @property
@@ -282,12 +304,15 @@ class Trainer:
         
         print(f"{len(train_loader)=}")
 
+        output_shaping_wd = 1e-4
         optimized_parameters = get_model_parameters(
             self.model,
             weight_decay=self.weight_decay,
-            exclude_patterns=["output_shaping"])
+            explicit_assignment={
+                'output_shaping.weight': output_shaping_wd,
+                'output_shaping.bias': output_shaping_wd})
         
-        optimizer = torch.optim.Adam(optimized_parameters, lr=1e-3)
+        optimizer = torch.optim.Adam(optimized_parameters, lr=1e-3, eps=1e-6)
 
         # milestones = [v*10_000 for v in (1, 2, 3, 4)] # finalization schedule for layout
         # milestones = [v*20_000 for v in (1, 2, 3, 4)] # finalization schedule for tile
@@ -301,23 +326,15 @@ class Trainer:
         print(f"{torch.get_num_threads()=}")
         print("DataLoader num worker threads", self.worker_threads)
 
-        # batch.config_runtime.mean()=2.4 for xla
-        # batch.config_runtime.mean()=0.03 for nlp
-        # batch.config_runtime.mean()=0.015 for tile
-
-        # good ranking_margin = batch.config_runtime.mean / 200
-
-        ranking_margin: float
-        if self.is_tile:
-            ranking_margin = 1e-1 # fractional units (not seconds)
-        else: # layout
-            if self.is_nlp:
-                ranking_margin = 1.5e-4 # sec
-            else: # xla
-                ranking_margin = 1e-2 # sec
-
         bound_deque: Callable[[], deque[float]] = partial(deque, maxlen=100)
         kendall_deq_dict: Dict[str, deque[float]] = defaultdict(bound_deque)
+
+        # We need gradient accumulation to improve stability of training
+        # Without gradient accumulation the number of microbatches (slates)
+        # is too small (4) and leads to gradient explosion. We need to accumulate
+        # something like 4 iterations to the total of 16 microbatches.
+        # Earlier we had 10 microbatches and the training was fine.
+        NUM_ACCUM_STEPS: int = 1 # 4
 
         exit_training = False
         while True:
@@ -329,7 +346,7 @@ class Trainer:
                 data_load_ts = time.time()
                 data_load_dur = data_load_ts - end_iter_ts
 
-                train_print_interval = 10
+                train_print_interval = 100
                 if self.iteration % train_print_interval == 0:
                     print("-"*80)
                     print(self.iteration, batch)
@@ -355,58 +372,19 @@ class Trainer:
                     
                     self.microbatch_size)
 
-                if self.is_tile:
-                    loss_mape = torch.zeros(size=(1,), dtype=pred.dtype, device=pred.device)
-                else:
-                    loss_mape = self.loss_op(pred, batch.config_runtime)
+                target = batch.config_runtime
+                target_slated = target.view(-1, self.microbatch_size)
+                pred_slated_raw: torch.Tensor = pred.view(-1, self.microbatch_size)
+                pred_slated = L2Clip(pred_slated_raw, max_norm=500, dim=-1)
 
-                # We store #ub_size duplicates of diff_triu_vector
-                # because of the technicalities of batching.
-                # In actuality we need only one of them for microbatch.
-                diff_triu_vector_per_ub = \
-                    batch.diff_triu_vector[::self.microbatch_size]
-
-                if self.is_tile:
-                    scale = 1.0
-                else:
-                    scale = 1.0 / ranking_margin
-
-                loss_diff_mat = scale * F.margin_ranking_loss(
-                    pred_diff_mat,
-                    torch.zeros_like(pred_diff_mat),
-                    torch.sign(diff_triu_vector_per_ub),
-                    margin=ranking_margin,
-                    reduce=False)
-
-                nz_diff_loss_frac = ((loss_diff_mat > 1e-6).sum() /
-                                          loss_diff_mat.numel())
-
-                loss_diff_mat_red = torch.mean(loss_diff_mat)
-
-                diff_mat_loss_scale = 1.0
-                loss_diff_mat_sc = diff_mat_loss_scale * loss_diff_mat_red
-                mape_loss_scale = 1.0
-                loss_mape_sc = mape_loss_scale * loss_mape
-                loss = loss_mape_sc + loss_diff_mat_sc
+                loss = listMLE(pred_slated, target_slated)
 
                 if self.iteration % train_print_interval == 0:
                     loss_val = loss.item()
-                    loss_mape_val = loss_mape.item()
-                    loss_mape_sc_val = loss_mape_sc.item()
-                    loss_diff_mat_sc_val = loss_diff_mat_sc.item()
-                    nz_diff_loss_frac_val = nz_diff_loss_frac.item()
                     learning_rate = lr_scheduler.get_last_lr()[0]
                     print(f"Train loss = {loss_val:.5f}, "
-                        f"loss_mape = {loss_mape_val:.5f}, "
-                        f"loss_mape_sc = {loss_mape_sc_val:.5f}, "
-                        f"loss_diff_mat_sc = {loss_diff_mat_sc_val:.5f}, "
-                        f"nz_diff_loss_frac = {nz_diff_loss_frac_val:.5f}"
                         )
                     self.logger.add_scalar("train/loss", loss_val, self.iteration)
-                    self.logger.add_scalar("train/loss_mape", loss_mape_val, self.iteration)
-                    self.logger.add_scalar("train/loss_mape_sc", loss_mape_sc_val, self.iteration)
-                    self.logger.add_scalar("train/loss_diff_mat_sc", loss_diff_mat_sc_val, self.iteration)
-                    self.logger.add_scalar("train/nz_diff_loss_frac", nz_diff_loss_frac_val, self.iteration)
                     self.logger.add_scalar("train/learning_rate", learning_rate, self.iteration)
 
                     kendall_list = []
@@ -436,36 +414,37 @@ class Trainer:
                         iteration=self.iteration,
                         train_kendall=kendall_total,
                         train_loss=loss_val,
-                        train_mape=loss_mape_val,
-                        train_loss_diff_mat_sc=loss_diff_mat_sc_val,
-                        train_nz_diff_loss_frac=nz_diff_loss_frac_val,
+                        train_mape=0.0,
+                        train_loss_diff_mat_sc=0.0,
+                        train_nz_diff_loss_frac=0.0,
                     )
                     print("kendall=", kendall_total, "p_value=", p_value_total)
                     self.logger.add_scalar("train/kendall", kendall_total, self.iteration)
                     # self.logger.add_scalar("train/p_value", p_value_total, self.iteration)
                     self.logger.add_scalar("train/epoch", epoch, self.iteration)
 
-                if self.iteration % train_print_interval == 0:
-                    grad_clip_val = 1000.0
-
-                    for specific_loss, specific_name in (
-                        (loss_mape_sc, "mape_sc_grad_norm"),
-                        (loss_diff_mat_sc, "diff_mat_sc_grad_norm"),
-                        (loss, "loss_grad_norm"),
-                    ):
-                        optimizer.zero_grad()
-                        if specific_loss.requires_grad:
-                            specific_loss.backward(retain_graph=True)
-                        grad_norm = clip_grad_norm_(self.model.parameters(), grad_clip_val).item()
-                        self.logger.add_scalar(f"train/{specific_name}", grad_norm, self.iteration)
-
                     all_param_norm = [torch.norm(p.detach()) for p in self.model.parameters()]
                     total_param_norm = torch.norm(torch.tensor(all_param_norm)).item()
                     self.logger.add_scalar(f"train/param_norm", total_param_norm, self.iteration)
 
-                optimizer.zero_grad()
+                    mean_pred_raw = torch.mean(torch.abs(pred_slated_raw)).item()
+                    mean_pred = torch.mean(torch.abs(pred_slated)).item()
+                    mean_target = torch.mean(torch.abs(target_slated)).item()
+                    self.logger.add_scalar(f"train/mean_pred_raw", mean_pred_raw, self.iteration)
+                    self.logger.add_scalar(f"train/mean_pred", mean_pred, self.iteration)
+                    self.logger.add_scalar(f"train/mean_target", mean_target, self.iteration)
+
+                grad_accum_cnt = self.iteration % NUM_ACCUM_STEPS
+                if grad_accum_cnt % NUM_ACCUM_STEPS == 0:
+                    optimizer.zero_grad()
                 loss.backward(retain_graph=True)
-                optimizer.step()
+                if grad_accum_cnt == NUM_ACCUM_STEPS - 1:
+                    grad_clip_val = 100.0
+                    grad_norm = clip_grad_norm_(self.model.parameters(), grad_clip_val).item()
+                    loss_print_interval = train_print_interval * NUM_ACCUM_STEPS
+                    if self.iteration % loss_print_interval == loss_print_interval - 1:
+                        self.logger.add_scalar(f"train/loss_grad_norm", grad_norm, self.iteration)
+                    optimizer.step()
 
                 forward_backward_ts = time.time()
                 forward_backward_dur = forward_backward_ts - data_load_ts
@@ -665,8 +644,7 @@ class Trainer:
                     )
 
                 if split == 'valid':
-                    loss = self.loss_op(pred, batch.config_runtime)
-                    loss_list.append(loss.item())
+                    loss_list.append(0.0)
 
             for pr, tg, fn in zip(pred, batch.config_runtime, batch.fname):
                 assert isinstance(fn, str), "File name must be a string"
