@@ -44,13 +44,19 @@ class Model(nn.Module):
                                  node_opcode_emb_size +
                                  config_feat_size)
         
-        if is_tile or wider_config: # enable wider config for tile by default
+        if is_tile or is_nlp or wider_config: # enable wider config for tile and for nlp by default
             in_channels = 64
             channel_config = [256, 256, 256, 256, 512, 512, 512, 512]
         else:
             in_channels = 32
             channel_config = [64, 64, 128, 128, 256, 256]
         assert len(channel_config) > 0
+
+        self.add_residuals: bool
+        if is_nlp:
+            self.add_residuals = True
+        else:
+            self.add_residuals = False
 
         self.input_shaping = nn.Linear(concat_node_feat_size, in_channels)
 
@@ -150,7 +156,12 @@ class Model(nn.Module):
         feat = F.relu(self.input_shaping(node_feat_all))
     
         for conv in self.convs:
-            feat = F.relu(conv(feat, edge_index))
+            feat_out = conv(feat, edge_index)
+            if self.add_residuals and (feat_out.shape[1] == feat.shape[1]):
+                feat = feat_out + feat # resudual connection
+            else:
+                feat = feat_out
+            feat = F.relu(feat)
 
         per_node_latencies_unsq = self.output_shaping(feat)
 
