@@ -121,8 +121,7 @@ class Model(nn.Module):
         else:
             config_feat_size = node_config_feat.shape[1]
 
-        node_feat_abs = torch.relu(node_feat) # discard negative numbers
-        node_feat_log = torch.log1p(node_feat_abs)
+        node_feat_log = torch.log1p(torch.abs(node_feat)) * torch.sign(node_feat)
         node_feat_emb = self.node_feat_embedding(node_feat_log)
         node_opcode_emb = self.node_opcode_embedding(node_opcode.long())
 
