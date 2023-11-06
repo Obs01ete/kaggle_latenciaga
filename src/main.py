@@ -120,6 +120,7 @@ class Trainer:
                  wider_config: Optional[bool] = None,
                  collection: Optional[str] = None,
                  delete_duplicates: Optional[bool] = None,
+                 filter_by_entropy: Optional[bool] = None,
                  enable_trainval: Optional[bool] = None,
                  validate_first: Optional[bool] = None,
                  tag: Optional[str] = None,
@@ -136,6 +137,9 @@ class Trainer:
 
         if delete_duplicates is None:
             delete_duplicates = True # turn on duplicate filtration by default
+        
+        if filter_by_entropy is None:
+            filter_by_entropy = False
 
         if enable_trainval is None:
             enable_trainval = False
@@ -188,7 +192,12 @@ class Trainer:
         self.iters_per_val = DEFAULT_ITERS_PER_VAL
         self.iters_per_train_kendall_print = DEFAULT_ITERS_PER_TRAIN_KENDALL_PRINT
 
-        cache_root = Path("data_cache_clean") if delete_duplicates else Path("data_cache")
+        cache_str = "data_cache"
+        if delete_duplicates:
+            cache_str = cache_str + "_clean"
+        if filter_by_entropy:
+            cache_str = cache_str + "_ent"
+        cache_root = Path(cache_str)
 
         self.train_data = LayoutData(
             collections_root,
@@ -199,6 +208,7 @@ class Trainer:
             oversample_factor=self.oversample_factor,
             cache_root=cache_root,
             delete_duplicates=delete_duplicates,
+            filter_by_entropy=filter_by_entropy,
         )
 
         self.val_data = LayoutData(
@@ -208,6 +218,7 @@ class Trainer:
             purpose=Purpose.Valid,
             cache_root=cache_root,
             delete_duplicates=delete_duplicates,
+            filter_by_entropy=filter_by_entropy,
         )
 
         # don't delete duplicates for test but use the same folder as train and val
@@ -781,6 +792,8 @@ def main():
                         help='One of 4 collections. Default layout-xla-random if not set')
     parser.add_argument('--delete-duplicates', action='store', type=bool,
                         help='Delete duplicates from source data')
+    parser.add_argument('--filter-by-entropy', action='store', type=bool,
+                        help='Apply data recovery by filtering out low-entropy segments')
     parser.add_argument('--enable-trainval', action='store', type=bool,
                         help='Enable training on merged train and valid')
     parser.add_argument('--validate-first', action='store_true',
@@ -801,6 +814,7 @@ def main():
                       wider_config=args.wider_config,
                       collection=args.collection,
                       delete_duplicates=args.delete_duplicates,
+                      filter_by_entropy=args.filter_by_entropy,
                       enable_trainval=args.enable_trainval,
                       validate_first=args.validate_first,
                       tag=args.tag,

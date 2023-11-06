@@ -18,6 +18,7 @@ from torch_geometric.utils import to_undirected
 
 from src.utils import make_diff_matrix, triu_vector
 from src.sys_utils import process_init_fn
+from src.entropy_filter import EntropyFilter
 
 
 def random_sample(d: Dict[Any, Any], num) -> Dict[Any, Any]:
@@ -68,19 +69,43 @@ def delete_dupl(npz_dict: dict, is_tile: bool) -> dict:
     return npz_dict_copy
 
 
-def repack_one_npz(src_file: str, dst_file: str, is_tile: bool = False, delete_duplicates: bool = False):
+def repack_one_npz(src_file: str,
+                   dst_file: str,
+                   is_tile: bool,
+                   is_random: bool,
+                   filter_by_entropy: bool = False,
+                   delete_duplicates: bool = False):
+
     npz = np.load(src_file)
-    data = dict(npz)
+    npz_dict = dict(npz)
+
+    if filter_by_entropy and not is_tile:
+        if is_random: # both xla and nlp
+            entropy_thr = 0.3
+        else: # is default, both xla and nlp
+            entropy_thr = 3.0
+        entropy_filter = EntropyFilter(npz_dict, entropy_thr=entropy_thr)
+        if entropy_filter.picked_frac < 0.1:
+            print(f"Most (90%+) of the graph data is corrupted, skip it: {src_file}")
+            return
+        maybe_npz_dict = entropy_filter.apply_filter()
+        if maybe_npz_dict is None:
+            print(f"No high-entropy sequences of blocks found, skip it: {src_file}")
+            return
+        print(f"Repacking with {entropy_filter.picked_frac:.3f} preserved: {src_file}")
+        npz_dict = maybe_npz_dict
+
     if delete_duplicates:
-        data = delete_dupl(npz_dict=data, is_tile=is_tile)
-        if data["config_runtime"].shape[0] == 1:
+        npz_dict = delete_dupl(npz_dict, is_tile)
+        if npz_dict["config_runtime"].shape[0] == 1:
             # all configs are duplicates
             return
+
     if is_tile:
-        np.savez(dst_file, **data)
+        np.savez(dst_file, **npz_dict)
     else:
-        new_data = {k: v for k, v in data.items() if k != 'node_config_feat'}
-        node_config_feat = data['node_config_feat']
+        new_data = {k: v for k, v in npz_dict.items() if k != 'node_config_feat'}
+        node_config_feat = npz_dict['node_config_feat']
         new_data['num_configs'] = np.array([node_config_feat.shape[0]], dtype=int)
         for i in range(node_config_feat.shape[0]):
             node_config_feat_ith = np.ascontiguousarray(node_config_feat[i])
@@ -127,8 +152,9 @@ class LayoutData(Dataset):
             convert_to_undirected: bool = False,
             repack_npz: bool = True,
             cache_root: Path = Path("data_cache"),
-            num_repack_processes: int = 8,
+            num_repack_processes: int = 16,
             delete_duplicates: bool = False,
+            filter_by_entropy: bool = False,
             ):
 
         super().__init__()
@@ -153,9 +179,12 @@ class LayoutData(Dataset):
         is_layout_xla = "layout-xla-" in self.coll
 
         self.is_tile = "tile-" in self.coll
+        self.is_random = "-random" in self.coll
         self._repack_one_npz_partial = partial(repack_one_npz,
                                                is_tile=self.is_tile,
-                                               delete_duplicates=delete_duplicates)
+                                               is_random=self.is_random,
+                                               delete_duplicates=delete_duplicates,
+                                               filter_by_entropy=filter_by_entropy)
 
         MAX_CONFIGS_PER_GRAPH = 1000 # both layout and tile
 
