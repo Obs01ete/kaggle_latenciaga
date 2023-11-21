@@ -1,3 +1,6 @@
+# This file is a modified copy of the original file from the allRank repository:
+# https://github.com/allegro/allRank/blob/master/allrank/models/losses/listMLE.py
+
 import torch
 
 PADDED_Y_VALUE = -1
